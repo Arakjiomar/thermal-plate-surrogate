@@ -1,0 +1,6 @@
+numpy>=1.24
+scipy>=1.10
+pyyaml>=6.0
+matplotlib>=3.7
+pytest>=7
+# torch is added at the surrogate milestone
