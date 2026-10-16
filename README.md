@@ -1,6 +1,6 @@
 # Thermal Plate Surrogate
 
-> **Work in progress.** Milestones 1–2 (repo + verified solver) are done; the dataset, surrogate, UQ and Docker stages are next.
+> **Work in progress.** Milestones 1–3 (repo, verified solver, dataset) are done; the baseline, surrogate, UQ and Docker stages are next.
 
 A neural network that replaces a finite-difference heat-conduction solver: given nine physical parameters, it predicts the **full 2D temperature field** of a plate in a fraction of the solver's time, and reports how uncertain each prediction is.
 
@@ -38,20 +38,39 @@ assembles the sparse system with Kronecker products, $A = k\,(I\otimes D + D\oti
 
 The test suite also checks that quadratics are reproduced to machine precision, the maximum principle, mirror symmetry, superposition and the exact $1/k$ scaling.
 
+## The dataset
+
+`scripts/make_dataset.py` samples the 9 parameters and solves each case at 64×64 (1100 solves, about 13 s on a laptop):
+
+| Split | Size | How it's sampled |
+|---|---:|---|
+| train / val / test | 800 / 100 / 100 | one Latin hypercube over the parameter box in `configs/default.yaml`, randomly split |
+| out-of-distribution | 100 | Latin hypercube over the box widened by 25% of each range on both sides (clipped to physical limits), keeping only points outside the training box |
+
+A Latin hypercube splits every parameter's range into *N* equal slices and puts exactly one sample in each slice, so each parameter is evenly covered even with few samples in 9 dimensions. Every sample also stores an **OOD distance**: how far, in units of the range width, its furthest coordinate lies outside the training box. Later sections use it to show that surrogate error and uncertainty both grow with distance from the training data.
+
+In 9 dimensions almost the whole widened box lies outside the training box: only $(1/1.5)^9 \approx 2.6\%$ of it is inside. A typical OOD sample therefore leaves the box in about three parameters at once.
+
+Generation is deterministic: the script prints a SHA-256 fingerprint of all arrays, and the same config and seed always give the same fingerprint. The data files are not committed; regenerate them with the script.
+
+![Dataset overview](figures/dataset_overview.png)
+
 ## How to run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                          # 7 solver tests
-python scripts/verify_solver.py # regenerates figures/solver_verification.png
+pytest                           # 15 tests (solver + dataset)
+python scripts/verify_solver.py  # regenerates figures/solver_verification.png
+python scripts/make_dataset.py   # writes data/plate_dataset.npz (~13 s)
+python scripts/plot_dataset.py   # regenerates figures/dataset_overview.png
 ```
 
 ## Roadmap
 
 - [x] Repo structure, packaging, tests
 - [x] Finite-difference solver with $O(h^2)$ convergence test
-- [ ] Latin-hypercube dataset, including an out-of-distribution split
+- [x] Latin-hypercube dataset, including an out-of-distribution split
 - [ ] POD + ridge regression baseline
 - [ ] MLP field surrogate
 - [ ] Regularisation study over several seeds
