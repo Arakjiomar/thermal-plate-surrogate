@@ -1,6 +1,6 @@
 # Thermal Plate Surrogate
 
-> **Work in progress.** Milestones 1–3 (repo, verified solver, dataset) are done; the baseline, surrogate, UQ and Docker stages are next.
+> **Work in progress.** Milestones 1–4 (repo, verified solver, dataset, POD baseline) are done; the neural surrogate, UQ and Docker stages are next.
 
 A neural network that replaces a finite-difference heat-conduction solver: given nine physical parameters, it predicts the **full 2D temperature field** of a plate in a fraction of the solver's time, and reports how uncertain each prediction is.
 
@@ -55,15 +55,40 @@ Generation is deterministic: the script prints a SHA-256 fingerprint of all arra
 
 ![Dataset overview](figures/dataset_overview.png)
 
+## Baseline: POD + ridge regression
+
+Before any neural network, the standard reduced-order model sets the bar. **Proper Orthogonal Decomposition** (POD, i.e. PCA of the fields) finds the orthonormal spatial modes $\phi_r$ that best represent the 800 training fields: they are the left singular vectors of the centred data matrix, and $\lambda_r = s_r^2/N$ is the variance each captures. **Ridge regression** on polynomial features of the parameters then predicts the first $R$ mode coefficients, and the field is rebuilt as $\bar T + \sum_r a_r(\mathbf p)\,\phi_r$.
+
+![POD modes](figures/pod_modes.png)
+
+- **The fields are very compressible.** 7 modes capture 99%, 11 capture 99.9% and 17 capture 99.99% of the variance. Modes 2–4 are edge-temperature patterns: by superposition, the four edge temperatures span exactly four dimensions (checked by a test). Mode 6 is a dipole, $\partial_x$ of the source bump, which is how a linear basis represents a source that moves: $u(x-\delta) \approx u - \delta\,\partial_x u$.
+- **Regression, not compression, limits accuracy.** Projecting the test fields onto 17 modes loses only 0.28% (the "oracle"), but predicting the coefficients from the parameters costs about 10× more.
+- **Physics-informed features help.** The source term scales exactly as $A/k$ (superposition with zero edges), so adding $A/k$ and $1/k$ as inputs cuts the test error from 4.3% to 2.7%.
+
+Hyperparameters (polynomial degree 1–4, ridge $\alpha$ from $10^{-6}$ to $10^4$) are chosen on the validation set. Degree 4 overfits: 714 features for 800 samples.
+
+| Model | degree | test rel. L2 | test RMSE | peak-T error | hotspot error (plate lengths) | OOD rel. L2 |
+|---|---:|---:|---:|---:|---:|---:|
+| POD + ridge, generic features | 3 | 4.3% | 2.68° | 2.63° | 0.042 | 17.7% |
+| POD + ridge, + A/k, 1/k | 3 | 2.7% | 1.78° | 2.29° | 0.034 | 15.7% |
+| projection onto 17 modes (oracle) | — | 0.28% | | | | 0.62% |
+
+![POD + ridge results](figures/pod_ridge_results.png)
+
+**Out of distribution, the regression breaks.** The modes still describe OOD fields well (oracle 0.6%), but the cubic polynomial extrapolates badly. Mean error rises to about 16%, and the worst cases (low conductivity or a source near a corner) overshoot the peak temperature by 2–3×. Error grows with $d_\text{OOD}$. That's the gap the neural surrogate and its uncertainty estimates have to address.
+
+Prediction costs about 0.07 ms per field, against about 12 ms for the solver.
+
 ## How to run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                           # 15 tests (solver + dataset)
+pytest                           # 25 tests (solver, dataset, POD, metrics)
 python scripts/verify_solver.py  # regenerates figures/solver_verification.png
 python scripts/make_dataset.py   # writes data/plate_dataset.npz (~13 s)
 python scripts/plot_dataset.py   # regenerates figures/dataset_overview.png
+python scripts/fit_pod.py        # POD + ridge baseline -> results/pod_ridge.json + figures (~10 s)
 ```
 
 ## Roadmap
@@ -71,7 +96,7 @@ python scripts/plot_dataset.py   # regenerates figures/dataset_overview.png
 - [x] Repo structure, packaging, tests
 - [x] Finite-difference solver with $O(h^2)$ convergence test
 - [x] Latin-hypercube dataset, including an out-of-distribution split
-- [ ] POD + ridge regression baseline
+- [x] POD + ridge regression baseline
 - [ ] MLP field surrogate
 - [ ] Regularisation study over several seeds
 - [ ] Speed-up benchmark

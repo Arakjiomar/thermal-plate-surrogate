@@ -1,0 +1,592 @@
+{
+  "n_modes": 17,
+  "energy_fraction": 0.9999210653423979,
+  "models": {
+    "generic": {
+      "degree": 3,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.04859674987169143,
+      "test": {
+        "rel_l2_mean": 0.04329161189477491,
+        "rel_l2_p95": 0.09741739387493321,
+        "rmse_mean": 2.682372018789813,
+        "rmse_p95": 6.5506008322045535,
+        "max_t_err_mean": 2.62985974448584,
+        "max_t_err_p95": 15.322451589525558,
+        "hotspot_err_mean": 0.042258477909788636,
+        "hotspot_err_p95": 0.2698412698412698
+      },
+      "ood": {
+        "rel_l2_mean": 0.17734536276449922,
+        "rel_l2_p95": 0.4903042246814976,
+        "rmse_mean": 10.1566618295817,
+        "rmse_p95": 26.40494595241723,
+        "max_t_err_mean": 9.488280739434513,
+        "max_t_err_p95": 54.62460585594896,
+        "hotspot_err_mean": 0.16483580250738566,
+        "hotspot_err_p95": 0.7329699759364672
+      },
+      "ms_per_field": 0.06603842999993503
+    },
+    "physics": {
+      "degree": 3,
+      "alpha": 1.0,
+      "val_rel_l2": 0.025888370418086983,
+      "test": {
+        "rel_l2_mean": 0.027203251249991248,
+        "rel_l2_p95": 0.0915821567115843,
+        "rmse_mean": 1.7790988587117011,
+        "rmse_p95": 5.8123612967957,
+        "max_t_err_mean": 2.291681852056387,
+        "max_t_err_p95": 13.747478577870805,
+        "hotspot_err_mean": 0.033641643791497415,
+        "hotspot_err_p95": 0.1309523809523807
+      },
+      "ood": {
+        "rel_l2_mean": 0.15697118173871535,
+        "rel_l2_p95": 0.5997040293003688,
+        "rmse_mean": 11.001934413138951,
+        "rmse_p95": 30.561967308595086,
+        "max_t_err_mean": 17.634833602644218,
+        "max_t_err_p95": 68.46298721489201,
+        "hotspot_err_mean": 0.11605947918363103,
+        "hotspot_err_p95": 0.5780327088143595
+      },
+      "ms_per_field": 0.0734011900001974
+    }
+  },
+  "oracle": {
+    "test": 0.002769301640372734,
+    "ood": 0.006155126726453634
+  },
+  "grid": [
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.10805389633711654
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.10805389603121401
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.10805389297221123
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 0.001,
+      "val_rel_l2": 0.10805386238440723
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 0.01,
+      "val_rel_l2": 0.10805355672874999
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 0.1,
+      "val_rel_l2": 0.10805052240513517
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 1.0,
+      "val_rel_l2": 0.10802239709848539
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 10.0,
+      "val_rel_l2": 0.10795708682360201
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 100.0,
+      "val_rel_l2": 0.12072586607066067
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.2749167828249126
+    },
+    {
+      "physics": false,
+      "degree": 1,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.43075492376108104
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.06702904399268275
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.06702904299611738
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.06702903303050194
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 0.001,
+      "val_rel_l2": 0.06702893337819135
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 0.01,
+      "val_rel_l2": 0.0670279372394745
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 0.1,
+      "val_rel_l2": 0.06701801428539571
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 1.0,
+      "val_rel_l2": 0.06692262214133782
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 10.0,
+      "val_rel_l2": 0.06634516683282538
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 100.0,
+      "val_rel_l2": 0.08239414560748946
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.26029892310194236
+    },
+    {
+      "physics": false,
+      "degree": 2,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.42784126758570745
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.04859674987169143
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.04859674991275506
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.04859675032537039
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 0.001,
+      "val_rel_l2": 0.048596754649564214
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 0.01,
+      "val_rel_l2": 0.04859681766393185
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 0.1,
+      "val_rel_l2": 0.0485993939198134
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 1.0,
+      "val_rel_l2": 0.04879219437673875
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 10.0,
+      "val_rel_l2": 0.05629414957338107
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 100.0,
+      "val_rel_l2": 0.09025740857107259
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.13910549223111862
+    },
+    {
+      "physics": false,
+      "degree": 3,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.3157191023724696
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.10221952861094788
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.10221898096729459
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.10221350575082802
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 0.001,
+      "val_rel_l2": 0.10215887532262218
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 0.01,
+      "val_rel_l2": 0.10162449747591214
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 0.1,
+      "val_rel_l2": 0.09727117614765214
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 1.0,
+      "val_rel_l2": 0.0865368735632034
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 10.0,
+      "val_rel_l2": 0.09732294390351282
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 100.0,
+      "val_rel_l2": 0.10152250356935129
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.1384582367131431
+    },
+    {
+      "physics": false,
+      "degree": 4,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.3065570049852023
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.08634838109492042
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.08634838109329131
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.08634838107703596
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 0.001,
+      "val_rel_l2": 0.08634838091805093
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 0.01,
+      "val_rel_l2": 0.086348379685002
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 0.1,
+      "val_rel_l2": 0.08634840297388244
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 1.0,
+      "val_rel_l2": 0.08635213842843545
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 10.0,
+      "val_rel_l2": 0.08669140756774305
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 100.0,
+      "val_rel_l2": 0.10325240328249077
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.2614589046469699
+    },
+    {
+      "physics": true,
+      "degree": 1,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.4254942548963412
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.04159033057861758
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.041590326182209314
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.04159028223140775
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 0.001,
+      "val_rel_l2": 0.04158984404799208
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 0.01,
+      "val_rel_l2": 0.041585591037597756
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 0.1,
+      "val_rel_l2": 0.041553042149624006
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 1.0,
+      "val_rel_l2": 0.04145383277204388
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 10.0,
+      "val_rel_l2": 0.041429265594668994
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 100.0,
+      "val_rel_l2": 0.06713085878096765
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.24773638521507862
+    },
+    {
+      "physics": true,
+      "degree": 2,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.41719817144730115
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.02854913841520853
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.028544824400937942
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.028515828840280012
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 0.001,
+      "val_rel_l2": 0.02848583160062641
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 0.01,
+      "val_rel_l2": 0.028254366252678943
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 0.1,
+      "val_rel_l2": 0.02728017338480117
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 1.0,
+      "val_rel_l2": 0.025888370418086983
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 10.0,
+      "val_rel_l2": 0.039532048700619875
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 100.0,
+      "val_rel_l2": 0.08195222950488736
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.12706524307404565
+    },
+    {
+      "physics": true,
+      "degree": 3,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.2953998773168217
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 1e-06,
+      "val_rel_l2": 0.08232791455913899
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 9.999999999999999e-06,
+      "val_rel_l2": 0.0823278127169603
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 0.0001,
+      "val_rel_l2": 0.08232684715356325
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 0.001,
+      "val_rel_l2": 0.08231719229125217
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 0.01,
+      "val_rel_l2": 0.08222493342253462
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 0.1,
+      "val_rel_l2": 0.08161909873144287
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 1.0,
+      "val_rel_l2": 0.08245701545152928
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 10.0,
+      "val_rel_l2": 0.0898607762539376
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 100.0,
+      "val_rel_l2": 0.09288852018378767
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 1000.0,
+      "val_rel_l2": 0.12761277650020672
+    },
+    {
+      "physics": true,
+      "degree": 4,
+      "alpha": 10000.0,
+      "val_rel_l2": 0.28547637065129366
+    }
+  ]
+}
