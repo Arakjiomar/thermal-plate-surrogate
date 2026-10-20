@@ -1,6 +1,6 @@
 # Thermal Plate Surrogate
 
-> **Work in progress.** Milestones 1–4 (repo, verified solver, dataset, POD baseline) are done; the neural surrogate, UQ and Docker stages are next.
+> **Work in progress.** Milestones 1–5 (solver, dataset, POD baseline, neural surrogates) are done; the regularization study, UQ and Docker stages are next.
 
 A neural network that replaces a finite-difference heat-conduction solver: given nine physical parameters, it predicts the **full 2D temperature field** of a plate in a fraction of the solver's time, and reports how uncertain each prediction is.
 
@@ -79,16 +79,40 @@ Hyperparameters (polynomial degree 1–4, ridge $\alpha$ from $10^{-6}$ to $10^4
 
 Prediction costs about 0.07 ms per field, against about 12 ms for the solver.
 
+## Neural surrogates (PyTorch)
+
+Two multilayer perceptrons (SiLU activations, AdamW, cosine learning-rate decay, best-on-validation checkpoint), both on standardized parameters plus $A/k$ and $1/k$:
+
+- **POD + MLP**: the network predicts the 17 POD coefficients, replacing ridge. Targets are scaled by one global constant, so the MSE loss equals the squared *field* error (the modes are orthonormal).
+- **Direct MLP**: the network predicts all 64×64 = 4096 temperatures.
+
+Width and depth are chosen on the validation set (POD + MLP: width 256, depth 2; direct: width 256, depth 3).
+
+| Model | test rel. L2 | test p95 | test RMSE | peak-T error | OOD rel. L2 |
+|---|---:|---:|---:|---:|---:|
+| POD + ridge (baseline) | 2.72% | 9.2% | 1.78° | 2.29° | 15.7% |
+| POD + MLP | 0.64% | 2.1% | 0.41° | 0.73° | 3.1% |
+| POD + MLP, raw inputs only | 0.99% | 2.7% | 0.69° | 1.36° | 3.9% |
+| direct MLP | 0.59% | 1.6% | 0.37° | 0.68° | 2.8% |
+
+![MLP results](figures/mlp_results.png)
+
+- **The networks beat the baseline about 4× in distribution and about 5× out of distribution.** The ridge regression was the bottleneck, and an MLP is a far better coefficient predictor. Out of distribution, a SiLU network grows at most linearly in its inputs, while a cubic polynomial grows like $z^3$.
+- **Physics features still help, but less.** Without $A/k$ and $1/k$ the POD + MLP error rises from 0.64% to 0.99%; the network learns most of the $1/k$ dependence on its own.
+- **Direct vs. POD output.** The direct MLP is slightly more accurate but has about 1M more parameters, trains several times slower, and its errors are pixel-noisy: nothing in its architecture ties neighbouring pixels together. The POD version is smooth by construction.
+- **Overfitting.** Training loss ends about 100× below validation loss. With only 800 samples, the networks memorize; the next milestone quantifies how much regularization helps.
+
 ## How to run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                           # 25 tests (solver, dataset, POD, metrics)
+pytest                           # 34 tests (solver, dataset, POD, metrics, MLP)
 python scripts/verify_solver.py  # regenerates figures/solver_verification.png
 python scripts/make_dataset.py   # writes data/plate_dataset.npz (~13 s)
 python scripts/plot_dataset.py   # regenerates figures/dataset_overview.png
 python scripts/fit_pod.py        # POD + ridge baseline -> results/pod_ridge.json + figures (~10 s)
+python scripts/train_mlp.py      # neural surrogates -> results/mlp.json + figure (~10 min on a laptop CPU)
 ```
 
 ## Roadmap
@@ -97,7 +121,7 @@ python scripts/fit_pod.py        # POD + ridge baseline -> results/pod_ridge.jso
 - [x] Finite-difference solver with $O(h^2)$ convergence test
 - [x] Latin-hypercube dataset, including an out-of-distribution split
 - [x] POD + ridge regression baseline
-- [ ] MLP field surrogate
+- [x] MLP field surrogate
 - [ ] Regularisation study over several seeds
 - [ ] Speed-up benchmark
 - [ ] Deep-ensemble uncertainty, in- vs. out-of-distribution
