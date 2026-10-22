@@ -26,13 +26,16 @@ from .pod import POD, Standardizer, physics_features
 # Network
 # ----------------------------------------------------------------------------
 class MLP(nn.Module):
-    """in_dim -> [Linear -> SiLU] x depth -> Linear -> out_dim."""
+    """in_dim -> [Linear -> SiLU (-> Dropout)] x depth -> Linear -> out_dim."""
 
-    def __init__(self, in_dim: int, out_dim: int, width: int = 256, depth: int = 3):
+    def __init__(self, in_dim: int, out_dim: int, width: int = 256, depth: int = 3,
+                 dropout: float = 0.0):
         super().__init__()
         layers, d = [], in_dim
         for _ in range(depth):
             layers += [nn.Linear(d, width), nn.SiLU()]
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
             d = width
         layers.append(nn.Linear(d, out_dim))
         self.net = nn.Sequential(*layers)
@@ -47,6 +50,7 @@ class TrainConfig:
     depth: int = 3
     lr: float = 2e-3
     weight_decay: float = 0.0
+    dropout: float = 0.0
     epochs: int = 1500
     batch_size: int = 64
     eval_every: int = 10
@@ -97,7 +101,7 @@ class FieldSurrogate:
 
         xt, yt = self._inputs(X), self._targets(T)
         xv, yv = self._inputs(X_val), self._targets(T_val)
-        self.net = MLP(xt.shape[1], yt.shape[1], cfg.width, cfg.depth)
+        self.net = MLP(xt.shape[1], yt.shape[1], cfg.width, cfg.depth, cfg.dropout)
         opt = torch.optim.AdamW(self.net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.epochs)
         loss_fn = nn.MSELoss()
@@ -162,6 +166,6 @@ class FieldSurrogate:
         else:
             m.mean = s["mean"]; out_dim = int(np.prod(s["shape"]))
         in_dim = len(m.x_scaler.mu)
-        m.net = MLP(in_dim, out_dim, m.cfg.width, m.cfg.depth)
+        m.net = MLP(in_dim, out_dim, m.cfg.width, m.cfg.depth, m.cfg.dropout)
         m.net.load_state_dict(s["net"])
         return m

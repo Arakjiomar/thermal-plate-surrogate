@@ -72,3 +72,22 @@ def test_same_seed_same_model():
     a = FieldSurrogate("pod", physics=False, n_modes=5).fit(X[:48], T[:48], X[48:], T[48:], FAST)
     b = FieldSurrogate("pod", physics=False, n_modes=5).fit(X[:48], T[:48], X[48:], T[48:], FAST)
     np.testing.assert_allclose(a.predict(X), b.predict(X))
+
+
+def test_dropout_is_active_in_train_mode_only():
+    net = MLP(4, 3, width=64, depth=2, dropout=0.5)
+    x = torch.ones(8, 4)
+    net.train()
+    assert not torch.equal(net(x), net(x))          # random masks differ between calls
+    net.eval()
+    assert torch.equal(net(x), net(x))              # deterministic at inference
+
+
+def test_weight_decay_shrinks_weights():
+    X, T = smooth_fields()
+    norms = []
+    for wd in (0.0, 0.5):
+        cfg = TrainConfig(width=32, depth=2, epochs=150, batch_size=16, eval_every=5, weight_decay=wd)
+        m = FieldSurrogate("pod", physics=False, n_modes=5).fit(X[:48], T[:48], X[48:], T[48:], cfg)
+        norms.append(sum(float((p.detach() ** 2).sum()) for p in m.net.parameters()))
+    assert norms[1] < norms[0]
