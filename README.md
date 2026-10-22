@@ -1,6 +1,6 @@
 # Thermal Plate Surrogate
 
-> **Work in progress.** Milestones 1–5 (solver, dataset, POD baseline, neural surrogates) are done; the regularization study, UQ and Docker stages are next.
+> **Work in progress.** Milestones 1–6 (solver, dataset, POD baseline, neural surrogates, regularization and data-size study) are done; the speed-up benchmark, uncertainty quantification and Docker stages are next.
 
 A neural network that replaces a finite-difference heat-conduction solver: given nine physical parameters, it predicts the **full 2D temperature field** of a plate in a fraction of the solver's time, and reports how uncertain each prediction is.
 
@@ -102,17 +102,49 @@ Width and depth are chosen on the validation set (POD + MLP: width 256, depth 2;
 - **Direct vs. POD output.** The direct MLP is slightly more accurate but has about 1M more parameters, trains several times slower, and its errors are pixel-noisy: nothing in its architecture ties neighbouring pixels together. The POD version is smooth by construction.
 - **Overfitting.** Training loss ends about 100× below validation loss. With only 800 samples, the networks memorize; the next milestone quantifies how much regularization helps.
 
+## Regularization and data-size study
+
+The POD + MLP was retrained **5 times per configuration with different random seeds** (initialization and minibatch order), and every number below is a mean ± standard deviation over those seeds. Selection uses the mean validation error. The gap is val MSE / train MSE at the kept epoch.
+
+| width | weight decay | val rel. L2 | test rel. L2 | OOD rel. L2 | gap |
+|---:|---:|---:|---:|---:|---:|
+| 64 | 0 | 1.03 ± 0.07% | 0.94 ± 0.06% | 4.2% | 10× |
+| 64 | 0.001 | 1.02 ± 0.07% | 0.93 ± 0.06% | 4.2% | 10× |
+| 64 | 0.01 | 1.01 ± 0.07% | 0.92 ± 0.05% | 4.1% | 10× |
+| 64 | 0.1 | 1.03 ± 0.05% | 0.94 ± 0.03% | 4.0% | 8× |
+| 256 | 0 | 0.75 ± 0.09% | 0.69 ± 0.06% | 3.2% | 56× |
+| 256 | 0.001 | 0.78 ± 0.16% | 0.72 ± 0.14% | 3.2% | 66× |
+| 256 | 0.01 | 0.70 ± 0.05% | 0.64 ± 0.03% | 3.0% | 44× |
+| 256 | 0.1 | 0.73 ± 0.07% | 0.68 ± 0.08% | 2.8% | 13× |
+
+Then, with the best setting (width 256, weight decay 0.01), the training set was cut to random subsets (a different subset per seed):
+
+| training simulations | test rel. L2 | OOD rel. L2 | gap |
+|---:|---:|---:|---:|
+| 100 | 4.56 ± 0.36% | 12.1% | 6515× |
+| 200 | 2.53 ± 0.17% | 7.4% | 754× |
+| 400 | 1.25 ± 0.06% | 4.9% | 186× |
+| 800 | 0.62 ± 0.02% | 2.9% | 84× |
+
+![Regularization study](figures/regularization.png)
+
+- **Data is the lever, and the scaling is clean.** Test error falls as $n^{-0.97}$: every doubling of the simulation budget halves the error, with no sign of a plateau at 800. With just 200 simulations the MLP already matches POD + ridge trained on 800. This answers the question a customer would ask: how many expensive simulations buy a given accuracy.
+- **Weight decay barely matters.** At width 256 its best value (0.01) improves test error from 0.69% to 0.64%, about one seed standard deviation, so it isn't a clear win. What it *does* do is cut the seed-to-seed spread in half, and at 0.1 it shrinks the train/val gap 4× without improving test error.
+- **A large gap isn't the problem.** Width 256 overfits 5× more than width 64 (gap 56× vs 10×) yet generalizes better (0.69% vs 0.94%). The gap measures memorization of the training set; what matters is held-out error, and the extra capacity is being used.
+- **Seed noise is about ±0.05%.** Differences smaller than that, like the width-256 vs width-512 choice in the previous section, can't be resolved with a single run.
+
 ## How to run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                           # 34 tests (solver, dataset, POD, metrics, MLP)
+pytest                           # 38 tests (solver, dataset, POD, metrics, MLP, study helpers)
 python scripts/verify_solver.py  # regenerates figures/solver_verification.png
 python scripts/make_dataset.py   # writes data/plate_dataset.npz (~13 s)
 python scripts/plot_dataset.py   # regenerates figures/dataset_overview.png
 python scripts/fit_pod.py        # POD + ridge baseline -> results/pod_ridge.json + figures (~10 s)
 python scripts/train_mlp.py      # neural surrogates -> results/mlp.json + figure (~10 min on a laptop CPU)
+python scripts/regularization_study.py   # 60 trainings -> results/regularization.json + figure (~25-40 min)
 ```
 
 ## Roadmap
@@ -122,7 +154,7 @@ python scripts/train_mlp.py      # neural surrogates -> results/mlp.json + figur
 - [x] Latin-hypercube dataset, including an out-of-distribution split
 - [x] POD + ridge regression baseline
 - [x] MLP field surrogate
-- [ ] Regularisation study over several seeds
+- [x] Regularisation study over several seeds (plus training-set size)
 - [ ] Speed-up benchmark
 - [ ] Deep-ensemble uncertainty, in- vs. out-of-distribution
 - [ ] Dockerised inference CLI
