@@ -138,8 +138,21 @@ class FieldSurrogate:
     # -- inference ------------------------------------------------------------
     @torch.no_grad()
     def predict(self, X: np.ndarray) -> np.ndarray:
+        """Fields for parameter rows X -> (N, n, n).
+
+        The whole computation, including the POD reconstruction, stays in
+        PyTorch. Doing the reconstruction matmul in NumPy instead runs NumPy's
+        BLAS thread pool right after PyTorch's, and on few-core machines the
+        two pools block each other (measured: 8 ms instead of 0.36 ms per call).
+        """
         self.net.eval()
-        return self._fields(self.net(self._inputs(X)).numpy().astype(np.float64))
+        Y = self.net(self._inputs(X)).double() * self.y_scale
+        if self.kind == "pod":
+            basis = torch.as_tensor(self.pod.modes[:, : self.n_modes].T)   # (R, M), no copy
+            F = torch.as_tensor(self.pod.mean) + Y @ basis
+        else:
+            F = torch.as_tensor(self.mean) + Y
+        return F.numpy().reshape(len(X), *self.shape)
 
     # -- persistence ----------------------------------------------------------
     def save(self, path: str | Path) -> None:

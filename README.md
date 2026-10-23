@@ -1,6 +1,6 @@
 # Thermal Plate Surrogate
 
-> **Work in progress.** Milestones 1–6 (solver, dataset, POD baseline, neural surrogates, regularization and data-size study) are done; the speed-up benchmark, uncertainty quantification and Docker stages are next.
+> **Work in progress.** Milestones 1–7 (solver, dataset, POD baseline, neural surrogates, regularization and data-size study, speed benchmark) are done; uncertainty quantification and Docker are next.
 
 A neural network that replaces a finite-difference heat-conduction solver: given nine physical parameters, it predicts the **full 2D temperature field** of a plate in a fraction of the solver's time, and reports how uncertain each prediction is.
 
@@ -133,18 +133,38 @@ Then, with the best setting (width 256, weight decay 0.01), the training set was
 - **A large gap isn't the problem.** Width 256 overfits 5× more than width 64 (gap 56× vs 10×) yet generalizes better (0.69% vs 0.94%). The gap measures memorization of the training set; what matters is held-out error, and the extra capacity is being used.
 - **Seed noise is about ±0.05%.** Differences smaller than that, like the width-256 vs width-512 choice in the previous section, can't be resolved with a single run.
 
+## Speed benchmark
+
+`scripts/benchmark.py` times everything on the same CPU (results and machine details in `results/benchmark.json`; timings vary by about ±20% between runs). There are two solver baselines. The **naive** one rebuilds and factorizes the sparse matrix for every plate. The **prefactorized** one uses the fact that the operator is $k\,L$ with $L$ fixed: it factorizes $L$ once and then only does triangular solves, many plates per call. The naive solver alone would make the surrogate look about 40× better than it is.
+
+| Method | single query | best throughput (ms per field) |
+|---|---:|---:|
+| solver, naive | 13.8 ms | 13.8 |
+| solver, prefactorized | 0.52 ms | 0.32 |
+| POD + ridge | 2.17 ms | 0.033 |
+| **POD + MLP** | 0.20 ms | **0.009** |
+| direct MLP | 0.31 ms | 0.028 |
+
+![Benchmark](figures/benchmark.png)
+
+- **Speed-up at best throughput: about 34× over the prefactorized solver**, about 1470× over the naive one. For single queries the surrogate is only 2–3× faster than the prefactorized solver, because fixed per-call overhead dominates. Surrogates earn their keep on large batches: design sweeps, optimization loops, uncertainty propagation.
+- **Break-even.** The surrogate costs about 47 s up front (1000 solves + one training run). That pays off after about 3,387 queries against the naive solver but about 150,645 against the prefactorized one. **For a linear 64×64 problem a well-written solver is already fast**, and the case for a surrogate is weak.
+- **Where it changes.** Solver cost grows as about $n^{2.3}$ with grid size: about 0.4 s at 256×256 in 2-D, and industrial 3-D FEA/CFD runs take minutes to hours, often nonlinear (so no factorization can be reused). A surrogate's inference cost doesn't depend on how expensive the solver was, so its advantage grows with every one of those factors.
+- **A deployment bug found along the way.** The POD + MLP first measured 8 ms per call for batches of 8 or more, 25× slower than expected. The cause was thread oversubscription: NumPy's OpenBLAS thread pool (used for the POD reconstruction) and PyTorch's thread pool were blocking each other on this 2-core machine. Moving the reconstruction into PyTorch fixed it with identical outputs.
+
 ## How to run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                           # 38 tests (solver, dataset, POD, metrics, MLP, study helpers)
+pytest                           # 41 tests
 python scripts/verify_solver.py  # regenerates figures/solver_verification.png
 python scripts/make_dataset.py   # writes data/plate_dataset.npz (~13 s)
 python scripts/plot_dataset.py   # regenerates figures/dataset_overview.png
 python scripts/fit_pod.py        # POD + ridge baseline -> results/pod_ridge.json + figures (~10 s)
 python scripts/train_mlp.py      # neural surrogates -> results/mlp.json + figure (~10 min on a laptop CPU)
 python scripts/regularization_study.py   # 60 trainings -> results/regularization.json + figure (~25-40 min)
+python scripts/benchmark.py      # solver vs. surrogate timings -> results/benchmark.json + figure (~1 min)
 ```
 
 ## Roadmap
@@ -155,7 +175,7 @@ python scripts/regularization_study.py   # 60 trainings -> results/regularizatio
 - [x] POD + ridge regression baseline
 - [x] MLP field surrogate
 - [x] Regularisation study over several seeds (plus training-set size)
-- [ ] Speed-up benchmark
+- [x] Speed-up benchmark
 - [ ] Deep-ensemble uncertainty, in- vs. out-of-distribution
 - [ ] Dockerised inference CLI
 

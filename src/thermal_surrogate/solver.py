@@ -166,3 +166,45 @@ def edge_values(p: PlateParams, n: int) -> np.ndarray:
 def solve_plate(p: PlateParams, n: int = 64) -> np.ndarray:
     """Temperature field (n, n) for one set of plate parameters."""
     return solve_poisson(n, p.k, gaussian_source(p), edge_values(p, n))
+
+
+# ----------------------------------------------------------------------------
+# Optimized batch solver: factorize once, reuse for every plate
+# ----------------------------------------------------------------------------
+class PlateBatchSolver:
+    """Solve many plates on the same grid with ONE sparse LU factorization.
+
+    The operator is k * L with L independent of the parameters, so
+
+        k L t = b   <=>   L t = b / k.
+
+    L is factorized once (scipy's SuperLU); each plate then costs only two
+    sparse triangular solves, and many right-hand sides go in one call.
+    """
+
+    def __init__(self, n: int = 64):
+        self.n = n
+        self.X, self.Y, self.h = make_grid(n)
+        self.lu = spla.splu(laplacian_matrix(n, k=1.0))
+
+    def solve(self, params: np.ndarray) -> np.ndarray:
+        """(N, 9) parameter rows -> (N, n, n) fields."""
+        n, m = self.n, self.n - 2
+        B = np.empty((m * m, len(params)))
+        G_all = []
+        for j, row in enumerate(params):
+            p = PlateParams(*row)
+            Q = gaussian_source(p)(self.X, self.Y)
+            G = edge_values(p, n)
+            b = Q[1:-1, 1:-1].copy()
+            c = p.k / self.h**2
+            b[:, 0] += c * G[1:-1, 0]
+            b[:, -1] += c * G[1:-1, -1]
+            b[0, :] += c * G[0, 1:-1]
+            b[-1, :] += c * G[-1, 1:-1]
+            B[:, j] = b.ravel() / p.k                    # divide by k: solve with L, not kL
+            G_all.append(G)
+        Tint = self.lu.solve(B)                          # all right-hand sides at once
+        out = np.array(G_all)
+        out[:, 1:-1, 1:-1] = Tint.T.reshape(len(params), m, m)
+        return out

@@ -85,3 +85,14 @@ def test_rejects_bad_inputs():
         solve_poisson(2, 1.0, lambda X, Y: X, lambda X, Y: X)
     with pytest.raises(ValueError):
         solve_poisson(10, -1.0, lambda X, Y: X, lambda X, Y: X)
+
+
+def test_batch_solver_matches_reference():
+    from thermal_surrogate.solver import PlateBatchSolver
+    rng = np.random.default_rng(0)
+    rows = np.column_stack([rng.uniform(0.5, 5, 6), rng.uniform(500, 5000, 6),
+                            rng.uniform(0.2, 0.8, (6, 2)), rng.uniform(0.05, 0.2, 6),
+                            rng.uniform(0, 100, (6, 4))])
+    fast = PlateBatchSolver(33).solve(rows)
+    for row, T in zip(rows, fast):
+        np.testing.assert_allclose(T, solve_plate(PlateParams(*row), 33), rtol=1e-10, atol=1e-10)
