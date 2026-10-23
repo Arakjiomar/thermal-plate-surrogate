@@ -24,6 +24,9 @@ RUN pip install .
 COPY model ./model
 ENV PLATE_MODEL_DIR=/app/model
 
+# COPY keeps the host's file permissions; make sure the non-root user can read the model.
+RUN chmod -R a+rX /app/model
+
 # Run as a non-root user.
 RUN useradd --create-home app
 USER app
