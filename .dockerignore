@@ -1,0 +1,13 @@
+# Only src/, pyproject.toml and model/ are needed in the image.
+.git
+.venv
+data
+runs
+figures
+results
+scripts
+tests
+**/__pycache__
+**/*.egg-info
+.pytest_cache
+*.npz

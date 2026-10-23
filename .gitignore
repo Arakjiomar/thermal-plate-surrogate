@@ -8,3 +8,6 @@ runs/
 *.npz
 *.pt
 .DS_Store
+
+# the exported model ships with the repo (used by the CLI and the Docker image)
+!model/*.pt

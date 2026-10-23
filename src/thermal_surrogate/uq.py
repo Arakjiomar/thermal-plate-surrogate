@@ -120,3 +120,21 @@ def auroc(scores_neg: np.ndarray, scores_pos: np.ndarray) -> float:
     greater = (pos[:, None] > neg[None, :]).mean()
     ties = (pos[:, None] == neg[None, :]).mean()
     return float(greater + 0.5 * ties)
+
+
+def impose_edges(mu: np.ndarray, sigma: np.ndarray, X: np.ndarray):
+    """Overwrite the predicted edges with the known Dirichlet temperatures.
+
+    The edges are inputs, so the exact answer there is known: mean = edge value,
+    uncertainty = 0. Field-averaged error barely changes (edges are ~6% of the
+    pixels), but local edge errors of up to ~9 C out of distribution disappear.
+    """
+    from .solver import PlateParams, edge_values
+    mu, sigma = mu.copy(), sigma.copy()
+    n = mu.shape[-1]
+    edge = np.zeros((n, n), dtype=bool)
+    edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
+    for i, row in enumerate(X):
+        mu[i][edge] = edge_values(PlateParams(*row), n)[edge]
+        sigma[i][edge] = 0.0
+    return mu, sigma
