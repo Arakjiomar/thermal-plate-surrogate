@@ -1,6 +1,6 @@
 # Thermal Plate Surrogate
 
-> **Work in progress.** Milestones 1–7 (solver, dataset, POD baseline, neural surrogates, regularization and data-size study, speed benchmark) are done; uncertainty quantification and Docker are next.
+> **Work in progress.** Milestones 1–8 (solver, dataset, POD baseline, neural surrogates, regularization and data-size study, speed benchmark, deep-ensemble uncertainty) are done; the Dockerized inference CLI is next.
 
 A neural network that replaces a finite-difference heat-conduction solver: given nine physical parameters, it predicts the **full 2D temperature field** of a plate in a fraction of the solver's time, and reports how uncertain each prediction is.
 
@@ -152,12 +152,32 @@ Then, with the best setting (width 256, weight decay 0.01), the training set was
 - **Where it changes.** Solver cost grows as about $n^{2.3}$ with grid size: about 0.4 s at 256×256 in 2-D, and industrial 3-D FEA/CFD runs take minutes to hours, often nonlinear (so no factorization can be reused). A surrogate's inference cost doesn't depend on how expensive the solver was, so its advantage grows with every one of those factors.
 - **A deployment bug found along the way.** The POD + MLP first measured 8 ms per call for batches of 8 or more, 25× slower than expected. The cause was thread oversubscription: NumPy's OpenBLAS thread pool (used for the POD reconstruction) and PyTorch's thread pool were blocking each other on this 2-core machine. Moving the reconstruction into PyTorch fixed it with identical outputs.
 
+## Uncertainty: a deep ensemble
+
+Five POD + MLP members (width 256, weight decay 0.01) are trained identically except for their random seed. Where training data pins the answer down they agree; away from it they disagree. Their **spread** (per-pixel standard deviation across members) is the uncertainty estimate, and their **mean** is the prediction. The raw spread is 2.0× too small (5 members share the same data and architecture), so it's rescaled by one factor fitted on the **validation** set. Uncertainty is scored on interior pixels only, because the edge temperatures are inputs that a deployed surrogate should simply impose.
+
+| | test (in distribution) | OOD |
+|---|---:|---:|
+| ensemble mean, rel. L2 | 0.55% | 2.65% |
+| single members, rel. L2 | 0.60–0.67% | 2.85–3.05% |
+| Spearman correlation, spread vs. error | 0.68 | 0.90 |
+| 90% intervals containing the truth, raw spread | 74% | 73% |
+| 90% intervals containing the truth, calibrated | 92% | 91% |
+
+![Ensemble UQ](figures/ensemble_uq.png)
+
+- **The ensemble is more accurate than every one of its members** (0.55% vs. 0.60% at best): averaging cancels part of each member's seed-dependent error.
+- **The uncertainty ranks errors well**, especially out of distribution (Spearman 0.90), and the spread map highlights where in the plate the error actually is.
+- **It detects out-of-distribution inputs.** The spread alone separates OOD queries from test queries with AUROC 0.92, without the model ever being told where the training box is.
+- **Calibration transfers.** One scale factor fitted in distribution gives about 90% coverage at the 90% level both in distribution and out of it. The errors are heavier-tailed than a Gaussian, though, so the calibrated intervals are too wide at the 50% level (67% coverage) and slightly short at 99% (97%).
+- **It's actionable.** Pooling test and OOD queries and sending the 20% with the largest spread back to the solver cuts the mean error from 1.07 °C to 0.30 °C, almost exactly what a perfect oracle achieves (0.29 °C); deferring at random gives 0.89 °C. That's the workflow a surrogate platform needs: trust the fast answer when the spread is small, run the real simulation when it isn't.
+
 ## How to run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                           # 41 tests
+pytest                           # 47 tests
 python scripts/verify_solver.py  # regenerates figures/solver_verification.png
 python scripts/make_dataset.py   # writes data/plate_dataset.npz (~13 s)
 python scripts/plot_dataset.py   # regenerates figures/dataset_overview.png
@@ -165,6 +185,7 @@ python scripts/fit_pod.py        # POD + ridge baseline -> results/pod_ridge.jso
 python scripts/train_mlp.py      # neural surrogates -> results/mlp.json + figure (~10 min on a laptop CPU)
 python scripts/regularization_study.py   # 60 trainings -> results/regularization.json + figure (~25-40 min)
 python scripts/benchmark.py      # solver vs. surrogate timings -> results/benchmark.json + figure (~1 min)
+python scripts/train_ensemble.py # 5-member ensemble + UQ evaluation -> results/ensemble.json + figure (~5 min)
 ```
 
 ## Roadmap
@@ -176,7 +197,7 @@ python scripts/benchmark.py      # solver vs. surrogate timings -> results/bench
 - [x] MLP field surrogate
 - [x] Regularisation study over several seeds (plus training-set size)
 - [x] Speed-up benchmark
-- [ ] Deep-ensemble uncertainty, in- vs. out-of-distribution
+- [x] Deep-ensemble uncertainty, in- vs. out-of-distribution
 - [ ] Dockerised inference CLI
 
 ## License
