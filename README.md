@@ -2,7 +2,7 @@
 
 **A neural surrogate that replaces a finite-difference heat-conduction solver: it predicts the full 64×64 temperature field of a plate from 9 physical parameters, says how uncertain it is, and hands the hard cases back to the solver.**
 
-Built end to end: a verified solver, a designed dataset with an out-of-distribution test set, a classical reduced-order baseline, PyTorch surrogates, a multi-seed regularization and data-scaling study, an honest speed benchmark, deep-ensemble uncertainty, and a Dockerized command-line tool. 55 tests.
+Built end to end: a verified solver, a designed dataset with an out-of-distribution test set, a classical reduced-order baseline, PyTorch surrogates, a multi-seed regularization and data-scaling study, an honest speed benchmark, deep-ensemble uncertainty, a Dockerized command-line tool, and active-learning experiments on which simulations to run next. 72 tests.
 
 ![Ensemble uncertainty](figures/ensemble_uq.png)
 
@@ -15,6 +15,7 @@ Built end to end: a verified solver, a designed dataset with an out-of-distribut
 | **Out-of-distribution detection** | the ensemble spread alone flags OOD inputs with **AUROC 0.92** |
 | **Calibration** | after one validation-fitted scale factor, 90% intervals hold **92%** (in distribution) and **91%** (out of distribution) of the truth |
 | **Data efficiency** | error ∝ $n^{-0.97}$: each doubling of training simulations halves the error |
+| **Choosing simulations** | letting the ensemble pick which simulations to run (uncertainty + diversity) reaches random sampling's 400-simulation accuracy with **~20% fewer** simulations, **~40% fewer** for OOD error. Pushed into a new region it chases outliers and doesn't beat random; [diagnosed below](#active-learning-which-simulations-to-run-next) |
 | **Speed** | about **34×** faster than a prefactorized sparse solver at best throughput (about 1470× vs. a naive one); see the benchmark for why the honest number is the smaller one |
 
 ## Why it matters
@@ -24,6 +25,7 @@ Engineering design runs on simulation (FEA, CFD), and a single high-fidelity run
 1. **Ground truth you can trust.** The solver is checked against a manufactured solution (observed order 2.00) and against physical invariants before any ML.
 2. **An honest evaluation.** A classical baseline to beat, an out-of-distribution test set, results over several seeds, and a speed comparison against a well-optimized solver rather than a straw man.
 3. **Uncertainty with a decision attached.** Every prediction carries a calibrated uncertainty map and a verdict: trust the surrogate, or run the solver.
+4. **Simulations spent where they count.** The same uncertainty decides which simulations to run next, tested against random sampling, including the case where it fails and why.
 
 ## Quick start (Docker)
 
@@ -239,12 +241,66 @@ Five POD + MLP members (width 256, weight decay 0.01) are trained identically ex
 - **Calibration transfers.** One scale factor fitted in distribution gives about 90% coverage at the 90% level both in distribution and out of it. The errors are heavier-tailed than a Gaussian, though, so the calibrated intervals are too wide at the 50% level (67% coverage) and slightly short at 99% (97%).
 - **It's actionable.** Pooling test and OOD queries and sending the 20% with the largest spread back to the solver cuts the mean error from 1.07 °C to 0.30 °C, almost exactly what a perfect oracle achieves (0.29 °C); deferring at random gives 0.89 °C. That's the workflow a surrogate platform needs: trust the fast answer when the spread is small, run the real simulation when it isn't.
 
+### Active learning: which simulations to run next
+
+Every training simulation costs solver time (hours each for real CFD/FEA), so the question is whether the surrogate can pick its own training data. **Pool-based batch active learning:** generate many candidate parameter sets (free), score each by the ensemble's spread (RMS over interior pixels), run the solver on a batch of the best candidates, retrain, repeat. Validation, test and OOD sets are never picked or trained on, and calibration is refit each round on the random validation set. Code: `src/thermal_surrogate/active.py`.
+
+Selection rules compared (3 seeds each, same starting plates for every rule within a seed):
+
+| rule | how a batch of B is chosen |
+|---|---|
+| random | B candidates at random (baseline) |
+| greedy spread | the B largest spreads |
+| spread + diversity | the top 10B by spread, then B of them far apart (greedy farthest-point in the unit cube) |
+| relative spread + diversity | as above, with spread ÷ the plate's own RMS temperature |
+| k-means cluster | k-means the whole pool into B clusters, take the most uncertain candidate in each |
+
+#### Experiment A: inside the training box (50 → 400 simulations)
+
+20,000 candidates from the training box; start from 50 random plates; batches of 50.
+
+| at 400 simulations (mean ± sd) | random | greedy spread | spread + diversity |
+|---|---:|---:|---:|
+| test rel. L2 | 1.12 ± 0.06% | 0.96 ± 0.01% | **0.88 ± 0.03%** |
+| test RMSE | 0.77 ± 0.05 °C | 0.59 ± 0.00 °C | **0.55 ± 0.02 °C** |
+| OOD rel. L2 | 4.67 ± 0.32% | 3.03 ± 0.09% | **2.94 ± 0.13%** |
+| simulations needed to match random's 400 (rel. L2 / RMSE / OOD) | 400 | 342 / 312 / 250 | **326 / 304 / 238** |
+
+![Active learning, experiment A](figures/active_learning.png)
+
+- **About 20% fewer simulations in distribution, 40% fewer for OOD error.** "Simulations needed" inverts a power-law fit to the random rule's learning curve ($e = 2.36\,n^{-0.88}$).
+- **Greedy selection clumps.** After the first chosen batch it is *worse* than random (5.0% vs. 4.1%): a 50-plate model's uncertainty sits in a few blobs and the whole batch lands in one. The diversity step fixes that, and every diverse seed beats every greedy seed at 400.
+- **Picks go where the model extrapolates:** low conductivity and high source strength (the hottest plates, since the source bump scales as $A/k$) and close to the box faces (median distance to the nearest face 0.010 vs. 0.036 for random). The edge temperatures are ignored: the field is linear in them, so the ensemble learns that early.
+- **The score decides which error falls:** spread is in °C, so RMSE gains more (1.61× equivalent samples) than relative error (1.41×).
+- **Calibration survives:** 90% coverage stays 91–93% in every round for every rule.
+
+#### Experiment B: extending into the out-of-distribution region (800 → 1000 simulations)
+
+Start from the shipped model's 800 in-box plates and spend 200 more simulations, batches of 100. Candidates come from the widened box the OOD test set is drawn from.
+
+| at 1000 simulations (mean ± sd) | random, in box | random, widened box | spread + diversity | relative spread + diversity | k-means cluster |
+|---|---:|---:|---:|---:|---:|
+| OOD rel. L2 | 2.32 ± 0.09% | 1.97 ± 0.22% | 1.88 ± 0.12% | 1.91 ± 0.08% | 1.96 ± 0.06% |
+| OOD RMSE | 1.56 °C | 1.58 ± 0.22 °C | 1.35 ± 0.06 °C | 1.42 ± 0.09 °C | 1.36 ± 0.02 °C |
+| in-box test rel. L2 | **0.47%** | 0.52% | 0.69% | 0.70% | 0.67% |
+| OOD queries the CLI defers to the solver | 44% | **41%** | 75% | 72% | 72% |
+| parameters out of range per picked plate (most common) | 0 | 3 | 5 | 4–5 | 5 |
+
+![Active learning, experiment B](figures/active_learning_ood.png)
+
+- **Where the data goes matters:** 200 random simulations in the new region bring OOD error to 1.97%; 200 more inside the box only to 2.32%.
+- **Uncertainty sampling does not beat random here.** All three uncertainty rules tie random on OOD relative error, cut OOD error in °C by ~14%, but cost ~30% of in-box accuracy and nearly double the CLI's deferral rate.
+- **Why: it chases outliers.** The ensemble is most uncertain in the widened box's corners, where several parameters are out of range at once. Picks have ~5 of 9 parameters out of range; real OOD queries ~2. The relative-spread rule (no °C bias) and the k-means rule (one pick per region) were added to test this and fail the same way, because the most uncertain point in any region is still its most extreme one.
+- **How it does damage:** the extreme plates (peaks up to 980 °C) inflate the network's single global target scale from 387 to 600–800, so every ordinary plate is learned in coarser units. That costs in-box accuracy, widens the spread, and triggers more deferrals.
+- **The lesson:** uncertainty sampling reduces uncertainty where it is *largest*, not where the model will be *queried*. It works when candidates look like future queries (experiment A) and backfires when their tails are far more extreme (experiment B). The fix is to weight the score by the query distribution (integrated variance reduction) and to normalize targets per sample.
+
 ## Limitations and next steps
 
 - **The physics is deliberately simple:** linear, steady, 2-D, uniform conductivity, on a fixed 64×64 grid. That keeps the ground truth exactly verifiable, and it's also why a well-optimized solver is already fast. The approach carries over, and the speed advantage grows, for nonlinear 3-D problems where no factorization can be reused.
 - **The surrogate is tied to one grid.** Real parts come as meshes of varying shape and resolution; mesh- and point-cloud models (graph neural networks) are the natural next step.
 - **The uncertainty is epistemic only.** Ensemble spread captures what the model doesn't know, not noise in the data (there is none here). The errors are heavier-tailed than Gaussian, so one calibration factor over-covers at the 50% level and under-covers slightly at 99%; **conformal prediction** would give distribution-free intervals.
-- **Possible upgrades:** a CNN decoder in place of POD (a spatial prior without a fixed basis), a physics-informed loss (PDE residual), and active learning that runs new simulations where the ensemble disagrees most.
+- **Active learning needs a query-aware score outside the training range.** Raw uncertainty picks extreme corner cases (experiment B); a score that measures expected error reduction over the expected queries, plus per-sample target normalization, is the next step.
+- **Possible upgrades:** a CNN decoder in place of POD (a spatial prior without a fixed basis), a physics-informed loss (PDE residual), and conformal prediction for distribution-free intervals.
 
 ## Reproduce everything
 
@@ -261,6 +317,8 @@ python scripts/regularization_study.py
 python scripts/benchmark.py
 python scripts/train_ensemble.py
 python scripts/export_model.py
+python scripts/active_learning.py
+python scripts/active_learning_ood.py
 ```
 
 | Script | What it does | Time on a laptop CPU |
@@ -273,6 +331,8 @@ python scripts/export_model.py
 | `benchmark.py` | solver vs. surrogate timings | ~1 min |
 | `train_ensemble.py` | 5-member ensemble + UQ evaluation (`--reuse` skips training) | ~5–10 min |
 | `export_model.py` | packages the ensemble into `model/` for the CLI and Docker | seconds |
+| `active_learning.py` | experiment A: 3 rules × 3 seeds, 50 → 400 simulations (`--fast` for a 1-seed, 3-member version; `--plot` redraws) | ~70 min (`--fast` ~15 min) |
+| `active_learning_ood.py` | experiment B: 5 rules × 3 seeds, 800 → 1000 simulations (`--seeds` / `--arms` run subsets, e.g. in parallel; `--plot` redraws) | ~2 h on 2 cores |
 
 Results land in `results/*.json` and `figures/`; data and trained runs (`data/`, `runs/`) are regenerated, not committed. The exported model in `model/` (about 6 MB) is committed so the Docker image builds without retraining. Every split, model and calibration factor is seeded and selected on the validation set only. On an Intel Mac, use Python 3.12 with `torch==2.2.2` and `numpy<2`.
 
@@ -284,9 +344,10 @@ src/thermal_surrogate/
   mlp.py       PyTorch MLP surrogates (POD-coefficient and direct-field)
   study.py     multi-seed experiment helpers
   uq.py        deep ensemble, calibration, coverage, AUROC, edge imposition
+  active.py    active learning: acquisition scores, selection rules, batch loop
   metrics.py   field error metrics shared by every model
   cli.py       the plate-surrogate command
-tests/         55 tests: physics invariants, numerics, ML, CLI
+tests/         72 tests: physics invariants, numerics, ML, CLI, active learning
 ```
 
 ## License
