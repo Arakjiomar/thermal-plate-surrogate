@@ -101,11 +101,18 @@ def sample_in_distribution(cfg: DatasetConfig, rng) -> dict[str, np.ndarray]:
     return {"train": X[idx[:a]], "val": X[idx[a:b]], "test": X[idx[b:]]}
 
 
-def sample_ood(cfg: DatasetConfig, rng, max_rounds: int = 50) -> np.ndarray:
-    """Latin hypercube on the widened box; reject points inside the original box."""
+def widened_box(cfg: DatasetConfig) -> tuple[np.ndarray, np.ndarray]:
+    """The OOD region's outer box: each range widened by `ood_expand` x its width
+    on both sides, then clipped to the physical limits."""
     width = cfg.highs - cfg.lows
     wlo = np.maximum(cfg.lows - cfg.ood_expand * width, cfg.phys_lows)
     whi = np.minimum(cfg.highs + cfg.ood_expand * width, cfg.phys_highs)
+    return wlo, whi
+
+
+def sample_ood(cfg: DatasetConfig, rng, max_rounds: int = 50) -> np.ndarray:
+    """Latin hypercube on the widened box; reject points inside the original box."""
+    wlo, whi = widened_box(cfg)
     kept = []
     for _ in range(max_rounds):
         X = scale(latin_hypercube(cfg.n_ood, len(PARAM_NAMES), rng), wlo, whi)

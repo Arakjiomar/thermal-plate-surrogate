@@ -16,6 +16,8 @@ Three selection rules are compared:
     spread   : the B candidates with the largest ensemble spread (greedy)
     diverse  : the top `factor * B` by spread, then B of those chosen to be
                far apart in parameter space (farthest-point selection)
+    cluster  : split the WHOLE pool into B clusters (k-means), then take the
+               most uncertain candidate in each cluster (representative + uncertain)
 
 Greedy top-B tends to pick near-duplicates: if one region is uncertain, every
 point in it scores high, and the whole batch lands there. The diverse rule
@@ -33,14 +35,27 @@ from .metrics import rel_l2
 from .mlp import TrainConfig
 from .uq import Ensemble, coverage, per_sample_rmse, per_sample_spread
 
-STRATEGIES = ("random", "spread", "diverse")
+STRATEGIES = ("random", "spread", "diverse", "cluster")
 
 
 # ----------------------------------------------------------------------------
 # Acquisition: one score per candidate
 # ----------------------------------------------------------------------------
-def pool_spread(ens: Ensemble, X: np.ndarray, chunk: int = 500) -> np.ndarray:
-    """RMS interior ensemble spread (deg C) for every row of X -> (N,).
+def relative_spread(P: np.ndarray) -> np.ndarray:
+    """Spread relative to the field's own size, from member predictions (M, N, n, n) -> (N,).
+
+    RMS interior spread / RMS interior predicted temperature. Dimensionless, so a
+    plate that is 5x hotter (and therefore has ~5x larger disagreement in deg C)
+    doesn't automatically outrank a cooler one the model is equally unsure about.
+    """
+    return per_sample_spread(P.std(axis=0, ddof=1)) / per_sample_spread(P.mean(axis=0))
+
+
+def pool_spread(ens: Ensemble, X: np.ndarray, chunk: int = 500, relative: bool = False) -> np.ndarray:
+    """Acquisition score for every row of X -> (N,).
+
+    relative=False: RMS interior ensemble spread in deg C (absolute).
+    relative=True : that spread divided by the RMS interior predicted field (see relative_spread).
 
     Computed in chunks: 20,000 candidates x 5 members x 4096 pixels in float64
     would be 3.3 GB at once. The calibration factor is a single constant, so it
@@ -49,7 +64,8 @@ def pool_spread(ens: Ensemble, X: np.ndarray, chunk: int = 500) -> np.ndarray:
     out = np.empty(len(X))
     for i in range(0, len(X), chunk):
         P = ens.predict_all(X[i : i + chunk])                 # (M, c, n, n)
-        out[i : i + chunk] = per_sample_spread(P.std(axis=0, ddof=1))
+        out[i : i + chunk] = (relative_spread(P) if relative
+                              else per_sample_spread(P.std(axis=0, ddof=1)))
     return out
 
 
@@ -87,6 +103,33 @@ def select_diverse(scores: np.ndarray, Z: np.ndarray, B: int, factor: int = 10) 
     return short[np.array(chosen)]
 
 
+def select_cluster(scores: np.ndarray, Z: np.ndarray, B: int, rng: np.random.Generator,
+                   iters: int = 25) -> np.ndarray:
+    """Representative-then-uncertain batch selection.
+
+    1. k-means the whole pool into B clusters (in unit-cube coordinates), so the
+       clusters follow where the candidates actually are (the query distribution).
+    2. From each cluster take its highest-scoring candidate.
+
+    Uncertainty decides WHICH point inside a region; the clustering decides which
+    REGIONS get a point. Top-score shortlists (spread / diverse) let a few extreme
+    corners of the box claim the whole batch; this can't, because every cluster
+    gets exactly one pick.
+    """
+    from scipy.cluster.vq import kmeans2
+    _, label = kmeans2(Z, B, iter=iters, minit="++", seed=rng)
+    picks = []
+    for c in range(B):
+        members = np.flatnonzero(label == c)
+        if len(members):
+            picks.append(members[np.argmax(scores[members])])
+    picks = np.array(picks)
+    if len(picks) < B:                                   # empty clusters: top up by score
+        rest = [i for i in select_top(scores, len(scores)) if i not in set(picks.tolist())]
+        picks = np.concatenate([picks, np.array(rest[: B - len(picks)], dtype=int)])
+    return picks
+
+
 def unit_cube(X: np.ndarray, lows: np.ndarray, highs: np.ndarray) -> np.ndarray:
     """Parameters -> box coordinates in [0, 1] (outside the box: <0 or >1)."""
     return (X - lows) / (highs - lows)
@@ -116,24 +159,34 @@ class ALConfig:
     budget: int = 400               # total labelled training points at the end
     members: int = 5                # ensemble size
     factor: int = 10                # diverse rule: shortlist size = factor * batch
+    tol: float = 1.0                # deg C; the CLI defers to the solver above this spread
+    score: str = "abs"              # acquisition score: "abs" (deg C) or "rel" (spread / field size)
     seed: int = 0
     train: TrainConfig = field(default_factory=TrainConfig)
 
 
-def _evaluate(ens: Ensemble, evals: dict) -> dict:
+def member_seeds_for(cfg: ALConfig) -> list[int]:
+    """Seeds of the ensemble members for one run (distinct across runs)."""
+    return [1000 * cfg.seed + j for j in range(cfg.members)]
+
+
+def _evaluate(ens: Ensemble, evals: dict, tol: float) -> dict:
     out = {}
     for name, (X, T) in evals.items():
-        mu, sigma = ens.predict(X)
+        mu, sigma = ens.predict(X)                      # sigma is calibrated (scale s)
         out[name] = {
             "rel_l2": float(rel_l2(mu, T).mean()),
             "rmse": float(per_sample_rmse(T, mu).mean()),
             "cov90": coverage(T, mu, sigma, levels=(0.9,))[0.9],
+            # share of queries the CLI would send back to the solver (same rule as `predict`)
+            "defer": float(np.mean(per_sample_spread(sigma) > tol)),
         }
     return out
 
 
 def run_loop(X_lab, T_lab, X_pool, X_val, T_val, evals: dict, cfg: ALConfig,
-             lows, highs, n_grid: int = 64, solve=None, verbose=False) -> dict:
+             lows, highs, n_grid: int = 64, solve=None, verbose=False,
+             first_ensemble: Ensemble | None = None) -> dict:
     """Run one active-learning experiment; return its round-by-round history.
 
     X_lab, T_lab : initial labelled set (already solved)
@@ -142,14 +195,19 @@ def run_loop(X_lab, T_lab, X_pool, X_val, T_val, evals: dict, cfg: ALConfig,
     evals        : {"test": (X, T), "ood": (X, T), ...}, scored after every round
     lows, highs  : box used to map parameters to the unit cube (diverse rule)
     solve        : X -> T; defaults to the finite-difference solver
+    first_ensemble: optional ensemble already trained on (X_lab, T_lab) with this
+                   config's member seeds; reused for round 1 instead of retraining
+                   (lets several strategies share an identical, expensive first round)
     """
     if cfg.strategy not in STRATEGIES:
         raise ValueError(f"strategy must be one of {STRATEGIES}")
+    if cfg.score not in ("abs", "rel"):
+        raise ValueError("score must be 'abs' or 'rel'")
     if cfg.budget < len(X_lab):
         raise ValueError("budget is smaller than the initial labelled set")
     solve = solve or (lambda X: solve_batch(X, n_grid))
     rng = np.random.default_rng(cfg.seed)
-    member_seeds = [1000 * cfg.seed + j for j in range(cfg.members)]
+    member_seeds = member_seeds_for(cfg)
 
     X_lab, T_lab = X_lab.copy(), T_lab.copy()
     available = np.ones(len(X_pool), dtype=bool)            # still in the pool?
@@ -157,9 +215,12 @@ def run_loop(X_lab, T_lab, X_pool, X_val, T_val, evals: dict, cfg: ALConfig,
 
     while True:
         t0 = time.perf_counter()
-        ens = Ensemble.train(X_lab, T_lab, X_val, T_val, cfg.train, member_seeds)
+        if first_ensemble is not None and len(history["rounds"]) == 0:
+            ens = first_ensemble
+        else:
+            ens = Ensemble.train(X_lab, T_lab, X_val, T_val, cfg.train, member_seeds)
         scale = ens.calibrate(X_val, T_val)
-        rec = {"n": len(X_lab), "scale": scale, **_evaluate(ens, evals)}
+        rec = {"n": len(X_lab), "scale": scale, **_evaluate(ens, evals, cfg.tol)}
 
         B = min(cfg.batch, cfg.budget - len(X_lab))
         if B > 0:
@@ -168,11 +229,14 @@ def run_loop(X_lab, T_lab, X_pool, X_val, T_val, evals: dict, cfg: ALConfig,
                 pick = select_random(len(idx_av), B, rng)
                 rec["pick_spread"] = None
             else:
-                s = pool_spread(ens, X_pool[idx_av])
+                s = pool_spread(ens, X_pool[idx_av], relative=cfg.score == "rel")
+                Z = unit_cube(X_pool[idx_av], lows, highs)
                 if cfg.strategy == "spread":
                     pick = select_top(s, B)
+                elif cfg.strategy == "diverse":
+                    pick = select_diverse(s, Z, B, cfg.factor)
                 else:
-                    pick = select_diverse(s, unit_cube(X_pool[idx_av], lows, highs), B, cfg.factor)
+                    pick = select_cluster(s, Z, B, rng)
                 rec["pick_spread"] = float(s[pick].mean())
                 rec["pool_spread_median"] = float(np.median(s))
             chosen = idx_av[pick]

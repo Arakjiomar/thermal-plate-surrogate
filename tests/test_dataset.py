@@ -101,3 +101,15 @@ def test_save_load_roundtrip(tmp_path):
     for k, v in data.items():
         np.testing.assert_array_equal(back[k], v)
     assert "meta" in back
+
+
+def test_widened_box_widens_then_clips_to_physical_limits():
+    from thermal_surrogate.dataset import DatasetConfig, widened_box
+    cfg = DatasetConfig.from_yaml(Path(__file__).resolve().parents[1] / "configs" / "default.yaml")
+    wlo, whi = widened_box(cfg)
+    width = cfg.highs - cfg.lows
+    assert np.all(wlo <= cfg.lows) and np.all(whi >= cfg.highs)
+    assert np.all(wlo >= cfg.phys_lows) and np.all(whi <= cfg.phys_highs)
+    i = list(cfg.lows).index(cfg.lows[0])          # k: 0.5 - 0.25 * 4.5 = -0.625, clipped to 0.2
+    assert wlo[i] == 0.2
+    np.testing.assert_allclose(whi[i], cfg.highs[i] + 0.25 * width[i])

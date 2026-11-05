@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from thermal_surrogate.active import (ALConfig, equivalent_n, fit_power_law, run_loop,
+from thermal_surrogate.active import (ALConfig, equivalent_n, fit_power_law, relative_spread, run_loop,
+                                      select_cluster,
                                       select_diverse, select_random, select_top, unit_cube)
 from thermal_surrogate.dataset import latin_hypercube, scale, solve_batch
 from thermal_surrogate.mlp import TrainConfig
@@ -78,7 +79,7 @@ def _run(d, strategy, seed=0):
                     {"test": (d["Xt"], d["Tt"])}, cfg, LOWS, HIGHS, n_grid=d["n"])
 
 
-@pytest.mark.parametrize("strategy", ["random", "spread", "diverse"])
+@pytest.mark.parametrize("strategy", ["random", "spread", "diverse", "cluster"])
 def test_loop_spends_exactly_the_budget_without_reusing_or_leaking(tiny, strategy):
     h = _run(tiny, strategy)
     assert [r["n"] for r in h["rounds"]] == [20, 30, 40]        # 3 trainings, 2 batches
@@ -88,6 +89,7 @@ def test_loop_spends_exactly_the_budget_without_reusing_or_leaking(tiny, strateg
     for X in (tiny["X0"], tiny["Xv"], tiny["Xt"]):              # picks come only from the pool
         assert not (picks[:, None, :] == X[None, :, :]).all(axis=2).any()
     assert all(np.isfinite(r["test"]["rel_l2"]) for r in h["rounds"])
+    assert all(0.0 <= r["test"]["defer"] <= 1.0 for r in h["rounds"])
 
 
 def test_loop_is_deterministic(tiny):
@@ -102,3 +104,56 @@ def test_loop_rejects_bad_config(tiny):
     with pytest.raises(ValueError):
         run_loop(tiny["X0"], tiny["T0"], tiny["pool"], tiny["Xv"], tiny["Tv"], {}, cfg,
                  LOWS, HIGHS, n_grid=tiny["n"])
+
+
+def test_first_ensemble_is_reused_and_gives_identical_results(tiny):
+    from thermal_surrogate.active import member_seeds_for
+    from thermal_surrogate.uq import Ensemble
+    cfg = ALConfig(strategy="diverse", batch=10, budget=40, members=2, seed=1,
+                   train=TrainConfig(width=16, depth=1, epochs=20, eval_every=10))
+    args = (tiny["X0"], tiny["T0"], tiny["pool"], tiny["Xv"], tiny["Tv"],
+            {"test": (tiny["Xt"], tiny["Tt"])}, cfg, LOWS, HIGHS)
+    ens0 = Ensemble.train(tiny["X0"], tiny["T0"], tiny["Xv"], tiny["Tv"], cfg.train,
+                          member_seeds_for(cfg))
+    a = run_loop(*args, n_grid=tiny["n"])
+    b = run_loop(*args, n_grid=tiny["n"], first_ensemble=ens0)
+    assert a["picks"] == b["picks"]
+    assert a["rounds"][0]["test"] == b["rounds"][0]["test"]
+
+
+def test_relative_spread_ignores_how_hot_the_plate_is():
+    # Plate 2 is plate 1 scaled 5x: its spread in deg C is 5x larger, its RELATIVE spread is equal.
+    from thermal_surrogate.uq import per_sample_spread
+    rng = np.random.default_rng(0)
+    base = 50 + rng.standard_normal((5, 1, 10, 10))           # 5 members, 1 plate
+    P = np.concatenate([base, 5 * base], axis=1)               # (5, 2, 10, 10)
+    absolute = per_sample_spread(P.std(axis=0, ddof=1))
+    rel = relative_spread(P)
+    assert absolute[1] == pytest.approx(5 * absolute[0])
+    assert rel[1] == pytest.approx(rel[0])
+
+
+def test_relative_score_runs_in_the_loop(tiny):
+    cfg = ALConfig(strategy="diverse", score="rel", batch=10, budget=30, members=2,
+                   train=TrainConfig(width=16, depth=1, epochs=20, eval_every=10))
+    h = run_loop(tiny["X0"], tiny["T0"], tiny["pool"], tiny["Xv"], tiny["Tv"],
+                 {"test": (tiny["Xt"], tiny["Tt"])}, cfg, LOWS, HIGHS, n_grid=tiny["n"])
+    assert [r["n"] for r in h["rounds"]] == [20, 30]
+    with pytest.raises(ValueError):
+        run_loop(tiny["X0"], tiny["T0"], tiny["pool"], tiny["Xv"], tiny["Tv"], {},
+                 ALConfig(score="relative"), LOWS, HIGHS, n_grid=tiny["n"])
+
+
+def test_select_cluster_takes_one_uncertain_point_per_region():
+    # 4 well-separated groups of 50 points; group 0 has ALL the highest scores.
+    # Top-4 would take 4 points from group 0; cluster selection takes one per group,
+    # and within each group the highest-scoring point.
+    rng = np.random.default_rng(0)
+    centres = np.array([[0.1, 0.1], [0.9, 0.1], [0.1, 0.9], [0.9, 0.9]])
+    Z = np.concatenate([c + 0.02 * rng.standard_normal((50, 2)) for c in centres])
+    s = rng.random(200); s[:50] += 10
+    picks = select_cluster(s, Z, 4, np.random.default_rng(1))
+    assert sorted(p // 50 for p in picks) == [0, 1, 2, 3]
+    for p in picks:
+        g = slice(50 * (p // 50), 50 * (p // 50 + 1))
+        assert s[p] == s[g].max()
