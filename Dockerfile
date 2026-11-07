@@ -14,7 +14,7 @@ WORKDIR /app
 
 # 1. CPU-only PyTorch first (~200 MB instead of the ~2 GB CUDA build). This layer
 #    is cached, so code changes don't re-download it.
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --default-timeout=300 --retries 10 torch --index-url https://download.pytorch.org/whl/cpu
 
 # 2. The package itself.
 COPY pyproject.toml ./
