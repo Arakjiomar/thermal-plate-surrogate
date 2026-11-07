@@ -62,14 +62,19 @@ class Ensemble:
         folder.mkdir(parents=True, exist_ok=True)
         for i, m in enumerate(self.members):
             m.save(folder / f"member_{i}.pt")
+        member_type = "unet" if type(self.members[0]).__name__ == "FieldUNet" else "pod_mlp"
         (folder / "ensemble.json").write_text(
-            json.dumps({"n_members": len(self.members), "scale": self.scale}))
+            json.dumps({"n_members": len(self.members), "scale": self.scale, "member_type": member_type}))
 
     @classmethod
     def load(cls, folder: str | Path) -> "Ensemble":
         folder = Path(folder)
         meta = json.loads((folder / "ensemble.json").read_text())
-        e = cls([FieldSurrogate.load(folder / f"member_{i}.pt") for i in range(meta["n_members"])])
+        if meta.get("member_type", "pod_mlp") == "unet":      # older folders have no type: POD + MLP
+            from .unet import FieldUNet as member_cls
+        else:
+            member_cls = FieldSurrogate
+        e = cls([member_cls.load(folder / f"member_{i}.pt") for i in range(meta["n_members"])])
         e.scale = meta["scale"]
         return e
 

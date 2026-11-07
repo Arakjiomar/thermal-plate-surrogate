@@ -100,3 +100,68 @@ def test_bad_inputs_exit_with_a_message(model_dir):
         main(["--model", str(model_dir), "predict", *FLAGS[1:], "--k=-1"])
     with pytest.raises(SystemExit, match="no model"):
         main(["--model", "/nonexistent", "info"])
+
+
+# ---------------------------------------------------------------- U-Net model with a conformal gate
+NU = 16                                                  # U-Net grid: divisible by 2^(levels - 1)
+
+
+@pytest.fixture(scope="module")
+def unet_dir(tmp_path_factory):
+    from thermal_surrogate.conformal import ConformalCalibrator
+    from thermal_surrogate.dataset import ood_distance
+    from thermal_surrogate.unet import FieldUNet, UNetConfig
+    rng = np.random.default_rng(1)
+    X = LOW + rng.random((60, 9)) * (HIGH - LOW)
+    T = PlateBatchSolver(NU).solve(X)
+    cfg = UNetConfig(widths=(8, 16, 16), epochs=10, batch_size=16, eval_every=5)
+    members = [FieldUNet(UNetConfig(**{**cfg.__dict__, "seed": s}), NU).fit(X[:30], T[:30], X[30:40], T[30:40])
+               for s in (0, 1)]
+    ens = Ensemble(members)
+    mu, sigma = ens.predict(X[40:])
+    dist = ood_distance(X[40:], LOW, HIGH)               # all 0: in-box calibration plates
+    cal = ConformalCalibrator(0.1, "gate", bins=(0.0,)).fit(T[40:], mu, sigma, dist)
+    folder = tmp_path_factory.mktemp("model_unet")
+    ens.save(folder)
+    card = {"parameters": PARAM_NAMES, "grid": NU, "default_tolerance_C": 1.0, "member_type": "unet",
+            "training_box": {"low": LOW.tolist(), "high": HIGH.tolist()},
+            "conformal": cal.to_dict(), "max_calibrated_ood_distance": 0.0}
+    (folder / "model_card.json").write_text(json.dumps(card))
+    return folder, cal
+
+
+def test_unet_ensemble_round_trips_with_its_member_type(unet_dir):
+    folder, _ = unet_dir
+    assert json.loads((folder / "ensemble.json").read_text())["member_type"] == "unet"
+    ens = Ensemble.load(folder)
+    assert type(ens.members[0]).__name__ == "FieldUNet"
+
+
+def test_model_names_resolve_to_the_shipped_folders(capsys, unet_dir, model_dir, monkeypatch):
+    from thermal_surrogate import cli
+    monkeypatch.setattr(cli, "DEFAULT_UNET_DIR", unet_dir[0])
+    monkeypatch.setattr(cli, "DEFAULT_MODEL_DIR", model_dir)
+    assert run(capsys, "--model", "unet", "info")["member_type"] == "unet"
+    assert "conformal" not in run(capsys, "info")            # default is the POD + MLP model
+
+
+def test_conformal_bound_is_q_times_spread_and_drives_the_verdict(capsys, unet_dir):
+    folder, cal = unet_dir
+    (r,) = run(capsys, "--model", str(folder), "predict", *FLAGS, "--tol", "1e6")
+    assert r["certified"] and r["verdict"] == "trust surrogate"
+    assert r["error_bound_90_C"] == pytest.approx(cal.q[0] * r["uncertainty_rms_C"], rel=1e-2, abs=2e-3)
+    (r,) = run(capsys, "--model", str(folder), "predict", *FLAGS, "--tol", "1e-9", "--fallback")
+    assert r["verdict"] == "run solver" and r["source"] == "solver" and "> tolerance" in r["reason"]
+
+
+def test_queries_beyond_the_calibrated_range_are_never_trusted(capsys, unet_dir):
+    folder, _ = unet_dir
+    far = [f for f in FLAGS if not f.startswith("--amp")] + ["--amp=8000"]   # A outside the box
+    (r,) = run(capsys, "--model", str(folder), "predict", *far, "--tol", "1e6")
+    assert not r["certified"] and r["error_bound_90_C"] is None
+    assert r["verdict"] == "run solver" and "not certified" in r["reason"]
+
+
+def test_pod_model_output_is_unchanged_by_the_conformal_option(capsys, model_dir):
+    (r,) = run(capsys, "--model", str(model_dir), "predict", *FLAGS)
+    assert "error_bound_90_C" not in r and "certified" not in r

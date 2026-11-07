@@ -1,0 +1,107 @@
+{
+  "model": "thermal-plate-surrogate: 5-member ensemble of field-to-field U-Nets with a conformal trust/solver gate",
+  "member_type": "unet",
+  "version": "0.1.0",
+  "exported": "2026-11-07",
+  "git_commit": "0b8a4f4",
+  "grid": 64,
+  "parameters": [
+    "k",
+    "amp",
+    "x0",
+    "y0",
+    "sigma",
+    "t_left",
+    "t_right",
+    "t_bottom",
+    "t_top"
+  ],
+  "training_box": {
+    "low": [
+      0.5,
+      500.0,
+      0.2,
+      0.2,
+      0.05,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "high": [
+      5.0,
+      5000.0,
+      0.8,
+      0.8,
+      0.2,
+      100.0,
+      100.0,
+      100.0,
+      100.0
+    ]
+  },
+  "n_members": 5,
+  "default_tolerance_C": 1.0,
+  "conformal": {
+    "alpha": 0.1,
+    "kind": "gate",
+    "bins": [
+      0.0,
+      0.1,
+      0.2
+    ],
+    "q": [
+      0.9181747872783088,
+      2.4228718925091752,
+      2.595124582725128,
+      3.1233769293961924
+    ],
+    "n": [
+      200,
+      37,
+      138,
+      125
+    ]
+  },
+  "max_calibrated_ood_distance": 0.24991386024956483,
+  "calibration_set": {
+    "n_in_box": 200,
+    "n_ood": 300,
+    "seed": 2026,
+    "description": "fresh plates, never used for training, early stopping or testing; OOD plates from the widened box (each range +25% of its width), the same sampler as the OOD test set",
+    "plates_per_distance_bin": [
+      200,
+      37,
+      138,
+      125
+    ]
+  },
+  "guarantee": "For a query drawn like the calibration plates in its distance bin, the plate's interior RMSE is <= error_bound_90_C with probability >= 90%. Queries beyond max_calibrated_ood_distance are not certified and are always deferred.",
+  "accuracy_rel_l2": {
+    "test": 0.0016116946756576907,
+    "ood": 0.013539045716921456
+  },
+  "gate_on_fresh_plates": {
+    "coverage": {
+      "in_range": 0.894,
+      "ood": 0.916
+    },
+    "deferred": {
+      "in_range": 0.0,
+      "ood": 0.348
+    },
+    "missed": {
+      "in_range": 0.0,
+      "ood": 0.002
+    },
+    "worst_trusted_C": {
+      "in_range": 0.7845476050940812,
+      "ood": 1.100945168160373
+    }
+  },
+  "notes": [
+    "Edge temperatures are exact by construction (hard constraint).",
+    "Exactly scale-equivariant: scaling the source amplitude and all edges by c scales the field by c.",
+    "~3 ms per field per member on a laptop CPU; the 5-member ensemble ~15 ms."
+  ]
+}

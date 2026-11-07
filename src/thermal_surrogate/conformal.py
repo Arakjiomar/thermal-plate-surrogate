@@ -162,3 +162,23 @@ def coverage_of(cal: ConformalCalibrator, T, mu, sigma, dist=None) -> float:
         z = np.abs(interior(T - mu)) / interior(sigma)
         return float(np.mean(z <= q[:, None, None]))
     return float(np.mean(scores(cal.kind, T, mu, sigma) <= q))
+
+
+# ----------------------------------------------------------------------------
+# Fresh calibration plates
+# ----------------------------------------------------------------------------
+def calibration_plates(cfg, n_in: int = 200, n_ood: int = 300, seed: int = 2026) -> dict:
+    """Solve fresh plates for calibration, never used for training or testing.
+
+    n_in plates from a Latin hypercube inside the training box, n_ood plates from
+    the widened box outside it (the same sampler as the OOD test set, new seed).
+    Returns X, T (in-box first, then OOD) and each plate's OOD distance.
+    """
+    from dataclasses import replace
+    from .dataset import latin_hypercube, ood_distance, sample_ood, scale, solve_batch
+    rng = np.random.default_rng(seed)
+    X_in = scale(latin_hypercube(n_in, 9, rng), cfg.lows, cfg.highs)
+    X_ood = sample_ood(replace(cfg, n_ood=n_ood), rng)
+    X = np.concatenate([X_in, X_ood])
+    return {"X": X, "T": solve_batch(X, cfg.n), "dist": ood_distance(X, cfg.lows, cfg.highs),
+            "n_in": n_in, "n_ood": n_ood, "seed": seed}

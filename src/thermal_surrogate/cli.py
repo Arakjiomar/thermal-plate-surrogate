@@ -9,6 +9,13 @@
 `predict` returns the ensemble-mean field, its calibrated uncertainty, and a
 verdict: trust the surrogate if the uncertainty is below a tolerance, otherwise
 run the solver (automatically, with --fallback).
+
+Two models ship:
+    --model pod    (default) 5 POD + MLP networks; verdict from the calibrated spread
+    --model unet   5 field-to-field U-Nets (more accurate) with a conformal gate:
+                   a 90% upper bound on each plate's RMSE (Mondrian conformal by
+                   distance from the training range); queries farther out than any
+                   calibration plate are not certified and always go to the solver.
 """
 from __future__ import annotations
 
@@ -21,12 +28,14 @@ from pathlib import Path
 
 import numpy as np
 
+from .conformal import ConformalCalibrator
 from .dataset import PARAM_NAMES, ood_distance
 from .solver import PlateParams, solve_plate
 from .uq import Ensemble, impose_edges, per_sample_spread
 
-DEFAULT_MODEL_DIR = Path(os.environ.get("PLATE_MODEL_DIR",
-                                        Path(__file__).resolve().parents[2] / "model"))
+_REPO = Path(__file__).resolve().parents[2]
+DEFAULT_MODEL_DIR = Path(os.environ.get("PLATE_MODEL_DIR", _REPO / "model"))
+DEFAULT_UNET_DIR = Path(os.environ.get("PLATE_UNET_DIR", _REPO / "model_unet"))
 FLAGS = {name: "--" + name.replace("_", "-") for name in PARAM_NAMES}   # t_left -> --t-left
 HELP = {"k": "conductivity", "amp": "source amplitude A", "x0": "source centre x (0-1)",
         "y0": "source centre y (0-1)", "sigma": "source width", "t_left": "edge temperature, x = 0",
@@ -106,7 +115,13 @@ def save_plot(path, T, sigma=None, title=""):
 # ----------------------------------------------------------------------------
 # Commands
 # ----------------------------------------------------------------------------
+def resolve_model(value: str) -> Path:
+    """'pod' / 'unet' name a shipped model; anything else is a model folder."""
+    return {"pod": DEFAULT_MODEL_DIR, "unet": DEFAULT_UNET_DIR}.get(value, Path(value))
+
+
 def load_model(folder: Path):
+    folder = resolve_model(str(folder))
     card_path = folder / "model_card.json"
     if not card_path.exists():
         raise SystemExit(f"error: no model found in {folder} (set PLATE_MODEL_DIR or --model)")
@@ -129,16 +144,34 @@ def cmd_predict(args) -> list[dict]:
     spread = per_sample_spread(sigma)
     d_ood = ood_distance(X, np.array(card["training_box"]["low"]), np.array(card["training_box"]["high"]))
 
+    # Conformal gate (U-Net model): a 90% upper bound on each plate's RMSE, from the
+    # Mondrian calibrator; not certified beyond the farthest calibration plate.
+    conf = card.get("conformal")
+    if conf is not None:
+        cal = ConformalCalibrator.from_dict(conf)
+        bound = cal.rmse_bound(sigma, d_ood)
+        certified = d_ood <= card["max_calibrated_ood_distance"]
+        bound[~certified] = np.inf
+
     results, fields = [], mu.copy()
     for i, row in enumerate(X):
-        trust = bool(spread[i] <= tol)
         r = {"params": dict(zip(PARAM_NAMES, row.tolist())),
              "uncertainty_rms_C": round(float(spread[i]), 3),
              "tolerance_C": tol,
              "ood_distance": round(float(d_ood[i]), 3),
-             "inside_training_range": bool(d_ood[i] == 0),
-             "verdict": "trust surrogate" if trust else "run solver",
-             "source": "surrogate", "ms": round(ms, 3)}
+             "inside_training_range": bool(d_ood[i] == 0)}
+        if conf is None:
+            trust = bool(spread[i] <= tol)
+        else:
+            trust = bool(certified[i] and bound[i] <= tol)
+            r["error_bound_90_C"] = round(float(bound[i]), 3) if np.isfinite(bound[i]) else None
+            r["certified"] = bool(certified[i])
+            r["reason"] = (f"outside the calibrated range (OOD distance {d_ood[i]:.3f} > "
+                           f"{card['max_calibrated_ood_distance']:.3f}): uncertainty not certified"
+                           if not certified[i] else
+                           f"90% error bound {bound[i]:.3f} °C {'<=' if trust else '>'} tolerance {tol:g} °C")
+        r.update({"verdict": "trust surrogate" if trust else "run solver",
+                  "source": "surrogate", "ms": round(ms, 3)})
         if not trust and args.fallback:
             t1 = time.perf_counter()
             fields[i] = solve_plate(PlateParams(*row), mu.shape[-1])
@@ -175,7 +208,9 @@ def cmd_solve(args) -> list[dict]:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="plate-surrogate", description=__doc__.split("\n")[0])
-    ap.add_argument("--model", default=str(DEFAULT_MODEL_DIR), help="model folder")
+    ap.add_argument("--model", default="pod",
+                    help="'pod' (default, POD + MLP ensemble), 'unet' (U-Net ensemble with a "
+                         "conformal gate), or a model folder")
     sub = ap.add_subparsers(dest="command", required=True)
 
     sub.add_parser("info", help="show the model card (training range, accuracy, calibration)")

@@ -3,6 +3,7 @@
 #   docker run --rm plate-surrogate info
 #   docker run --rm plate-surrogate predict --k 2 --amp 3000 --x0 0.4 --y0 0.6 --sigma 0.1 \
 #       --t-left 20 --t-right 80 --t-bottom 40 --t-top 10
+#   docker run --rm plate-surrogate --model unet predict ...   (U-Net ensemble + conformal gate)
 FROM python:3.12-slim
 
 # Keep logs unbuffered and pip quiet; one thread pool is plenty for inference.
@@ -20,12 +21,13 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN pip install .
 
-# 3. The trained model.
+# 3. The trained models: POD + MLP (default) and the U-Net ensemble with its conformal gate.
 COPY model ./model
-ENV PLATE_MODEL_DIR=/app/model
+COPY model_unet ./model_unet
+ENV PLATE_MODEL_DIR=/app/model PLATE_UNET_DIR=/app/model_unet
 
-# COPY keeps the host's file permissions; make sure the non-root user can read the model.
-RUN chmod -R a+rX /app/model
+# COPY keeps the host's file permissions; make sure the non-root user can read the models.
+RUN chmod -R a+rX /app/model /app/model_unet
 
 # Run as a non-root user.
 RUN useradd --create-home app
