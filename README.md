@@ -2,7 +2,7 @@
 
 **A neural surrogate that replaces a finite-difference heat-conduction solver: it predicts the full 64×64 temperature field of a plate from 9 physical parameters, says how uncertain it is, and hands the hard cases back to the solver.**
 
-Built end to end: a verified solver, a designed dataset with an out-of-distribution test set, a classical reduced-order baseline, PyTorch surrogates, a multi-seed regularization and data-scaling study, an honest speed benchmark, deep-ensemble uncertainty, a Dockerized command-line tool, and active-learning experiments on which simulations to run next. 72 tests.
+Built end to end: a verified solver, a designed dataset with an out-of-distribution test set, a classical reduced-order baseline, PyTorch surrogates, a multi-seed regularization and data-scaling study, an honest speed benchmark, deep-ensemble uncertainty, a Dockerized command-line tool, active-learning experiments on which simulations to run next, and a field-to-field U-Net with physics built into the architecture. 89 tests.
 
 ![Ensemble uncertainty](figures/ensemble_uq.png)
 
@@ -11,6 +11,7 @@ Built end to end: a verified solver, a designed dataset with an out-of-distribut
 | | |
 |---|---|
 | **Accuracy** (relative L2 error on held-out designs) | **0.55%** in distribution, 2.65% out of distribution (deep ensemble); 5× better than the POD + ridge baseline (2.7% / 15.7%) |
+| **Field-to-field U-Net** | the plate as images in, the temperature image out, with exact boundary conditions and exact scale equivariance built in: one U-Net **0.24%** (2.6× better than POD + MLP), a 5-U-Net ensemble **0.16%** / **1.35%** OOD; **3–4× fewer simulations** for the same accuracy; holds 2.7% error at 2.75× the largest training $A/k$ (MLPs: ~29%). Trade-offs: overconfident out of distribution and ~15 ms per prediction, so the CLI still ships POD + MLP; [details below](#field-to-field-u-net) |
 | **Uncertainty you can act on** | sending the 20% most uncertain queries to the solver cuts mean error 1.07 → **0.30 °C**, matching an oracle that knows the true errors (0.29 °C) |
 | **Out-of-distribution detection** | the ensemble spread alone flags OOD inputs with **AUROC 0.92** |
 | **Calibration** | after one validation-fitted scale factor, 90% intervals hold **92%** (in distribution) and **91%** (out of distribution) of the truth |
@@ -26,6 +27,7 @@ Engineering design runs on simulation (FEA, CFD), and a single high-fidelity run
 2. **An honest evaluation.** A classical baseline to beat, an out-of-distribution test set, results over several seeds, and a speed comparison against a well-optimized solver rather than a straw man.
 3. **Uncertainty with a decision attached.** Every prediction carries a calibrated uncertainty map and a verdict: trust the surrogate, or run the solver.
 4. **Simulations spent where they count.** The same uncertainty decides which simulations to run next, tested against random sampling, including the case where it fails and why.
+5. **Physics in the architecture, not just the data.** The U-Net gets the boundary conditions and the linearity of the heat equation as hard constraints, and the stress tests show it generalizes exactly along those symmetries, and no further.
 
 ## Quick start (Docker)
 
@@ -68,6 +70,8 @@ finite-difference solver ──► 1,100 solves (Latin hypercube + OOD set) ─�
         │ fallback when uncertain                                               ▼
 plate-surrogate CLI ◄── calibrated 5-member ensemble ◄── MLP: 9 parameters → 17 POD coefficients
 ```
+
+A second surrogate family, a **field-to-field U-Net**, takes the plate as images (heat source, edge temperatures, coordinates) and outputs the temperature image. It is more accurate and more data-efficient, but its ensemble is overconfident out of distribution, so the CLI keeps the POD + MLP ensemble for now ([details](#field-to-field-u-net)).
 
 The sections below give the details and the evidence for each step.
 
@@ -294,13 +298,84 @@ Start from the shipped model's 800 in-box plates and spend 200 more simulations,
 - **How it does damage:** the extreme plates (peaks up to 980 °C) inflate the network's single global target scale from 387 to 600–800, so every ordinary plate is learned in coarser units. That costs in-box accuracy, widens the spread, and triggers more deferrals.
 - **The lesson:** uncertainty sampling reduces uncertainty where it is *largest*, not where the model will be *queried*. It works when candidates look like future queries (experiment A) and backfires when their tails are far more extreme (experiment B). The fix is to weight the score by the query distribution (integrated variance reduction) and to normalize targets per sample.
 
+### Field-to-field U-Net
+
+**The plate as images.** Instead of 9 numbers in and 17 POD coefficients out, the model sees four 64×64 images, all computed in closed form from the parameters (`src/thermal_surrogate/fields.py`):
+
+| channel | what it is | why |
+|---|---|---|
+| source $q(x,y)/k$ | the Gaussian heat source divided by conductivity | $T = T_b + u/k$ with $-\nabla^2 u = q$, so $A$ and $k$ only enter as $A/k$ (a test confirms two plates with equal $A/k$ have identical fields) |
+| lift | equals the solver's boundary ring exactly; inverse-distance blend of the edge temperatures inside | a starting field that already satisfies the boundary conditions |
+| $x$, $y$ | coordinates (CoordConv) | the walls break translation symmetry, so the network must know where it is |
+
+**Two hard constraints** (`src/thermal_surrogate/unet.py`), guaranteed whatever the weights:
+
+$$T = \text{lift} + m(x,y)\cdot s\cdot c\cdot \text{UNet}\big(q/(k s),\ \text{lift}/s,\ x,\ y\big)$$
+
+- **Exact boundary conditions:** the mask $m$ is 0 on the boundary ring, so the edges equal the lift, which equals the known edge temperatures.
+- **Exact scale equivariance:** the heat equation is linear, so multiplying the source and all edge temperatures by $c$ multiplies $T$ by $c$. The per-plate scale $s$ = RMS(lift) + $2(A/k)\sigma^2$ is homogeneous of degree 1, so the network's input is unchanged under that scaling and the output scales exactly. This is also per-sample normalization: hot plates no longer dominate the loss.
+
+**Architecture:** 5-level U-Net (16–128 channels, GroupNorm, SiLU, average pooling, stride-2 transposed convolutions, skip connections; 1.29M parameters). Steady heat conduction is elliptic, so every output pixel must see the whole plate (127 px); 4 levels see 96 px, 5 levels see 200 px, and a test checks the formula against the measured gradient footprint.
+
+**Results** (3 seeds each, same data and metrics; `scripts/train_unet.py`):
+
+| mean ± sd | **U-Net** | U-Net without scale norm | POD + MLP | direct MLP |
+|---|---:|---:|---:|---:|
+| test rel. L2 | **0.24 ± 0.01%** | 0.70 ± 0.05% | 0.62 ± 0.02% | 0.61 ± 0.12% |
+| test p95 | **0.59%** | 1.22% | 1.90% | 1.69% |
+| peak-temperature error | **0.13 °C** | 0.32 °C | 0.71 °C | 0.72 °C |
+| OOD rel. L2 | **1.54 ± 0.08%** | 2.04 ± 0.14% | 2.91 ± 0.09% | 2.90 ± 0.27% |
+| training time (1 CPU thread) | 55 min | 55 min | 1 min | 6 min |
+
+- **One U-Net beats the whole 5-member POD + MLP ensemble.** The gain is largest on the hardest plates and at the peak, where a fixed 17-mode basis can't follow a narrow, moving source.
+- **The scale normalization is what makes it work:** the identical network without it is worse than POD + MLP in distribution. Building in the linearity of the PDE was worth ~3× accuracy.
+- Errors are exactly zero on the edges; a faint checkerboard texture in the error maps is the known artifact of stride-2 transposed convolutions.
+
+![U-Net vs. MLP surrogates](figures/unet_results.png)
+
+**Stress tests** (`scripts/stress_tests.py`). Push one input past the training range from the box centre, every point solved exactly:
+
+| pushed (last point) | U-Net | POD + MLP |
+|---|---:|---:|
+| source and all edges × 4 (the built-in symmetry) | **0.10%, flat for every c** | 5.1% |
+| $A/k$ at 2.75× the training maximum | **2.7%** | 28.7% |
+| one edge at 200 °C (2× the maximum) | **0.17%** | 1.3% |
+| source slid toward a wall ($x_0$ = 0.05) | 1.1% | 1.6% |
+
+A model generalizes along the symmetries built into it: exactly for the scaling, partly for $A/k$ and edge temperatures (the inputs stay close to familiar after dividing by $s$), and not at all for moving the source into a wall, where the U-Net's error grows 11× (POD + MLP: 7×).
+
+![Single-parameter OOD sweeps](figures/unet_sweeps.png)
+
+**Data efficiency:** error $\propto n^{-0.80}$ for the U-Net vs. $n^{-0.98}$ for POD + MLP, so the gap is largest with little data. POD + MLP needs ~390 simulations to match the U-Net trained on 100 (3.9×), and the U-Net matches POD + MLP's 800-simulation OOD error with 200.
+
+![Data efficiency](figures/unet_datasize.png)
+
+**Ensemble uncertainty** (5 U-Nets, the milestone-8 evaluation code; `scripts/unet_ensemble.py`):
+
+| 5-member ensembles | POD + MLP (shipped) | U-Net |
+|---|---:|---:|
+| rel. L2 of the mean, test / OOD | 0.55% / 2.65% | **0.16% / 1.35%** |
+| 90% coverage after calibration, test / OOD | 92% / **91%** | 92% / **75%** |
+| Spearman spread vs. error, test | 0.68 | **0.91** |
+| OOD detection AUROC | **0.92** | 0.87 |
+| member-error correlation, test / OOD | 0.81 / 0.90 | 0.38 / 0.93 |
+| OOD queries worse than 1 °C / deferred / **missed** | 36% / 53% / **2%** | 14% / 8% / **7%** |
+| cost per field (batches of 100, 2 CPU threads) | **0.2 ms** | 15 ms |
+
+- **In distribution, its uncertainty is excellent:** it ranks errors far better and needs no calibration (factor 1.03 vs. 2.00), because its members' errors are nearly independent.
+- **Out of distribution, it's overconfident:** member errors become almost identical (correlation 0.93), so their disagreement understates the error and 90% intervals hold only 75%. At the CLI's 1 °C tolerance it trusts 7% of OOD queries that are actually worse (worst 2.5 °C), vs. 2% for POD + MLP. An ensemble of identically built models shares their blind spots. **That's why the U-Net isn't in the CLI yet**: its trust/solver verdict needs OOD-aware calibration first.
+- **Speed is the trade-off:** after vectorizing the input encoding (0.05 ms per plate), one U-Net costs ~3 ms per field and the ensemble ~15 ms, comparable to the naive solver (13.8 ms) and ~45× the prefactorized one. On this small linear problem the U-Net is an accuracy and data-efficiency win, not a speed win; its cost doesn't grow with solver cost, which is where real 3-D nonlinear simulations come in.
+
+![U-Net ensemble uncertainty and cost](figures/unet_ensemble.png)
+
 ## Limitations and next steps
 
 - **The physics is deliberately simple:** linear, steady, 2-D, uniform conductivity, on a fixed 64×64 grid. That keeps the ground truth exactly verifiable, and it's also why a well-optimized solver is already fast. The approach carries over, and the speed advantage grows, for nonlinear 3-D problems where no factorization can be reused.
-- **The surrogate is tied to one grid.** Real parts come as meshes of varying shape and resolution; mesh- and point-cloud models (graph neural networks) are the natural next step.
+- **The surrogates are tied to one grid.** The U-Net takes geometry-like inputs, but still on a fixed 64×64 image. Real parts come as meshes of varying shape and resolution; mesh- and point-cloud models (graph neural networks) are the natural next step.
+- **The U-Net ensemble is overconfident out of distribution.** Identically built members share their extrapolation errors. Fixes to try: calibration that grows with OOD distance, conformal prediction on query-like data, or ensembles of different architectures.
 - **The uncertainty is epistemic only.** Ensemble spread captures what the model doesn't know, not noise in the data (there is none here). The errors are heavier-tailed than Gaussian, so one calibration factor over-covers at the 50% level and under-covers slightly at 99%; **conformal prediction** would give distribution-free intervals.
 - **Active learning needs a query-aware score outside the training range.** Raw uncertainty picks extreme corner cases (experiment B); a score that measures expected error reduction over the expected queries, plus per-sample target normalization, is the next step.
-- **Possible upgrades:** a CNN decoder in place of POD (a spatial prior without a fixed basis), a physics-informed loss (PDE residual), and conformal prediction for distribution-free intervals.
+- **Possible upgrades:** conformal prediction for distribution-free, OOD-aware intervals; resize-then-convolve upsampling to remove the U-Net's checkerboard artifact; a physics-informed loss (PDE residual).
 
 ## Reproduce everything
 
@@ -319,6 +394,11 @@ python scripts/train_ensemble.py
 python scripts/export_model.py
 python scripts/active_learning.py
 python scripts/active_learning_ood.py
+python scripts/train_unet.py --arms unet --seeds 0 1 2 3 4
+python scripts/train_unet.py --arms unet_noscale pod_mlp direct_mlp --seeds 0 1 2
+python scripts/train_unet.py --plot
+python scripts/stress_tests.py --sweeps --datasize --plot
+python scripts/unet_ensemble.py
 ```
 
 | Script | What it does | Time on a laptop CPU |
@@ -333,6 +413,9 @@ python scripts/active_learning_ood.py
 | `export_model.py` | packages the ensemble into `model/` for the CLI and Docker | seconds |
 | `active_learning.py` | experiment A: 3 rules × 3 seeds, 50 → 400 simulations (`--fast` for a 1-seed, 3-member version; `--plot` redraws) | ~70 min (`--fast` ~15 min) |
 | `active_learning_ood.py` | experiment B: 5 rules × 3 seeds, 800 → 1000 simulations (`--seeds` / `--arms` run subsets, e.g. in parallel; `--plot` redraws) | ~2 h on 2 cores |
+| `train_unet.py` | U-Net (with/without scale norm) vs. MLP baselines; each run saved separately (`--arms`, `--seeds`; `--plot` aggregates) | ~55 min per U-Net on one thread |
+| `stress_tests.py` | single-parameter OOD sweeps (`--sweeps`, minutes) and data-efficiency retraining (`--datasize`) | ~2.5 h on 2 cores for `--datasize` |
+| `unet_ensemble.py` | 5-U-Net ensemble UQ vs. the shipped ensemble, plus timing | ~2 min |
 
 Results land in `results/*.json` and `figures/`; data and trained runs (`data/`, `runs/`) are regenerated, not committed. The exported model in `model/` (about 6 MB) is committed so the Docker image builds without retraining. Every split, model and calibration factor is seeded and selected on the validation set only. On an Intel Mac, use Python 3.12 with `torch==2.2.2` and `numpy<2`.
 
@@ -344,10 +427,12 @@ src/thermal_surrogate/
   mlp.py       PyTorch MLP surrogates (POD-coefficient and direct-field)
   study.py     multi-seed experiment helpers
   uq.py        deep ensemble, calibration, coverage, AUROC, edge imposition
+  fields.py    plate parameters → input images (source/k, boundary lift, x, y), per-plate scale
+  unet.py      U-Net, receptive field, field-to-field surrogate with hard constraints
   active.py    active learning: acquisition scores, selection rules, batch loop
   metrics.py   field error metrics shared by every model
   cli.py       the plate-surrogate command
-tests/         72 tests: physics invariants, numerics, ML, CLI, active learning
+tests/         89 tests: physics invariants, numerics, ML, CLI, active learning, U-Net constraints
 ```
 
 ## License

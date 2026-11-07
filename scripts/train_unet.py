@@ -103,7 +103,10 @@ if "--plot" not in sys.argv:
     sys.exit(0)
 
 # ---------------------------------------------------------------- aggregate
-runs = {a: [json.loads(p.read_text()) for p in sorted(RUNS.glob(f"{a}_s*.json"))] for a in ARMS}
+# Aggregate only the requested seeds (default 0-2), so extra runs trained for other
+# purposes (e.g. seeds 3-4 for the 5-member ensemble) don't change this comparison.
+runs = {a: [r for r in (json.loads(p.read_text()) for p in sorted(RUNS.glob(f"{a}_s*.json")))
+            if r["seed"] in SEEDS] for a in ARMS}
 runs = {a: r for a, r in runs.items() if r}
 METRICS = ("rel_l2_mean", "rel_l2_p95", "rmse_mean", "max_t_err_mean", "hotspot_err_mean")
 res = {"arms": {}}
