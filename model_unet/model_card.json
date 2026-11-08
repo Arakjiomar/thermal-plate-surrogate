@@ -3,7 +3,7 @@
   "member_type": "unet",
   "version": "0.1.0",
   "exported": "2026-11-07",
-  "git_commit": "0b8a4f4",
+  "git_commit": "872e2c0",
   "grid": 64,
   "parameters": [
     "k",

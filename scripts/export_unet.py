@@ -42,7 +42,7 @@ assert np.allclose(cal.q, m4["q"]), (cal.q, m4["q"])
 uq = json.loads((ROOT / "results" / "unet_ensemble.json").read_text())["ensembles"]["unet"]
 
 try:
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+    commit = subprocess.run(["git", "describe", "--always", "--dirty"], cwd=ROOT,
                             capture_output=True, text=True).stdout.strip() or "unknown"
 except OSError:
     commit = "unknown"

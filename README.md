@@ -11,7 +11,8 @@ Built end to end: a verified solver, a designed dataset with an out-of-distribut
 | | |
 |---|---|
 | **Accuracy** (relative L2 error on held-out designs) | **0.55%** in distribution, 2.65% out of distribution (deep ensemble); 5× better than the POD + ridge baseline (2.7% / 15.7%) |
-| **Field-to-field U-Net** | the plate as images in, the temperature image out, with exact boundary conditions and exact scale equivariance built in: one U-Net **0.24%** (2.6× better than POD + MLP), a 5-U-Net ensemble **0.16%** / **1.35%** OOD; **3–4× fewer simulations** for the same accuracy; holds 2.7% error at 2.75× the largest training $A/k$ (MLPs: ~29%). Trade-offs: overconfident out of distribution and ~15 ms per prediction, so the CLI still ships POD + MLP; [details below](#field-to-field-u-net) |
+| **Field-to-field U-Net** | the plate as images in, the temperature image out, with exact boundary conditions and exact scale equivariance built in: one U-Net **0.24%** (2.6× better than POD + MLP), a 5-U-Net ensemble **0.16%** / **1.35%** OOD; **3–4× fewer simulations** for the same accuracy; holds 2.7% error at 2.75× the largest training $A/k$ (MLPs: ~29%). Trade-off: ~15 ms per prediction; [details below](#field-to-field-u-net) |
+| **A guarantee on the trust/solver gate** | conformal prediction turns the U-Net ensemble's spread into a **90% upper bound on each plate's error**, calibrated separately by distance from the training range: holds **89% / 92%** of the time on 1,000 fresh plates (in range / out of range), where the uncalibrated bound held only 46% out of range. The gate then wrongly trusts **0.2%** of out-of-range queries (was 9.6%) and sends 35% to the solver (POD + MLP: 57%). Shipped as `--model unet`; [details below](#conformal-prediction-a-90-guarantee-on-the-gate) |
 | **Uncertainty you can act on** | sending the 20% most uncertain queries to the solver cuts mean error 1.07 → **0.30 °C**, matching an oracle that knows the true errors (0.29 °C) |
 | **Out-of-distribution detection** | the ensemble spread alone flags OOD inputs with **AUROC 0.92** |
 | **Calibration** | after one validation-fitted scale factor, 90% intervals hold **92%** (in distribution) and **91%** (out of distribution) of the truth |
@@ -28,6 +29,7 @@ Engineering design runs on simulation (FEA, CFD), and a single high-fidelity run
 3. **Uncertainty with a decision attached.** Every prediction carries a calibrated uncertainty map and a verdict: trust the surrogate, or run the solver.
 4. **Simulations spent where they count.** The same uncertainty decides which simulations to run next, tested against random sampling, including the case where it fails and why.
 5. **Physics in the architecture, not just the data.** The U-Net gets the boundary conditions and the linearity of the heat equation as hard constraints, and the stress tests show it generalizes exactly along those symmetries, and no further.
+6. **A guarantee, with its assumptions stated.** Conformal prediction gives the gate a distribution-free 90% error bound, valid for queries drawn like its calibration plates, and the tool refuses to certify anything farther out than it was calibrated.
 
 ## Quick start (Docker)
 
@@ -54,6 +56,35 @@ The first query is inside the training range: uncertainty about 0.15 °C, so the
 }
 ```
 
+**The U-Net model with a conformal gate.** Add `--model unet` to use the 5-U-Net ensemble instead (more accurate, ~15 ms per prediction). Each prediction then carries a 90% upper bound on the plate's RMS error, and the verdict is `"trust surrogate"` only if that bound is certified and within the tolerance:
+
+```bash
+docker run --rm plate-surrogate --model unet info
+docker run --rm plate-surrogate --model unet predict --k 2 --amp 3000 --x0 0.4 --y0 0.6 --sigma 0.1 --t-left 20 --t-right 80 --t-bottom 40 --t-top 10
+docker run --rm plate-surrogate --model unet predict --k 0.25 --amp 6000 --x0 0.1 --y0 0.9 --sigma 0.04 --t-left 110 --t-right -20 --t-bottom 40 --t-top 10 --fallback
+docker run --rm plate-surrogate --model unet predict --k 2 --amp 8000 --x0 0.4 --y0 0.6 --sigma 0.1 --t-left 20 --t-right 80 --t-bottom 40 --t-top 10
+```
+
+| query | OOD distance | 90% error bound | verdict |
+|---|---:|---:|---|
+| in range | 0 | 0.073 °C | trust surrogate |
+| far outside, `--fallback` | 0.222 | 9.7 °C | run solver (solver ran) |
+| source amplitude 1.6× the maximum | 0.667 | none: beyond the farthest calibration plate (0.250) | run solver, `"certified": false` |
+
+```json
+{
+  "uncertainty_rms_C": 0.079,
+  "ood_distance": 0.0,
+  "error_bound_90_C": 0.073,
+  "certified": true,
+  "reason": "90% error bound 0.073 °C <= tolerance 1 °C",
+  "verdict": "trust surrogate",
+  "source": "surrogate"
+}
+```
+
+The default (`--model pod`) is the POD + MLP ensemble, unchanged. `PLATE_MODEL_DIR` / `PLATE_UNET_DIR` or `--model <folder>` point at other exported models.
+
 To save fields and plots, mount a folder:
 
 ```bash
@@ -71,7 +102,7 @@ finite-difference solver ──► 1,100 solves (Latin hypercube + OOD set) ─�
 plate-surrogate CLI ◄── calibrated 5-member ensemble ◄── MLP: 9 parameters → 17 POD coefficients
 ```
 
-A second surrogate family, a **field-to-field U-Net**, takes the plate as images (heat source, edge temperatures, coordinates) and outputs the temperature image. It is more accurate and more data-efficient, but its ensemble is overconfident out of distribution, so the CLI keeps the POD + MLP ensemble for now ([details](#field-to-field-u-net)).
+A second surrogate family, a **field-to-field U-Net**, takes the plate as images (heat source, edge temperatures, coordinates) and outputs the temperature image. It is more accurate and more data-efficient, but its raw ensemble spread is overconfident out of distribution. **Conformal prediction** fixes that: calibrated on fresh plates, separately by distance from the training range, the spread becomes a 90% error bound with a guarantee, and the U-Net ships in the CLI as `--model unet` ([U-Net](#field-to-field-u-net), [conformal](#conformal-prediction-a-90-guarantee-on-the-gate)).
 
 The sections below give the details and the evidence for each step.
 
@@ -363,19 +394,49 @@ A model generalizes along the symmetries built into it: exactly for the scaling,
 | cost per field (batches of 100, 2 CPU threads) | **0.2 ms** | 15 ms |
 
 - **In distribution, its uncertainty is excellent:** it ranks errors far better and needs no calibration (factor 1.03 vs. 2.00), because its members' errors are nearly independent.
-- **Out of distribution, it's overconfident:** member errors become almost identical (correlation 0.93), so their disagreement understates the error and 90% intervals hold only 75%. At the CLI's 1 °C tolerance it trusts 7% of OOD queries that are actually worse (worst 2.5 °C), vs. 2% for POD + MLP. An ensemble of identically built models shares their blind spots. **That's why the U-Net isn't in the CLI yet**: its trust/solver verdict needs OOD-aware calibration first.
+- **Out of distribution, it's overconfident:** member errors become almost identical (correlation 0.93), so their disagreement understates the error and 90% intervals hold only 75%. At the CLI's 1 °C tolerance it trusts 7% of OOD queries that are actually worse (worst 2.5 °C), vs. 2% for POD + MLP. An ensemble of identically built models shares their blind spots. Its trust/solver verdict needed OOD-aware calibration first, which is what the [next section](#conformal-prediction-a-90-guarantee-on-the-gate) adds.
 - **Speed is the trade-off:** after vectorizing the input encoding (0.05 ms per plate), one U-Net costs ~3 ms per field and the ensemble ~15 ms, comparable to the naive solver (13.8 ms) and ~45× the prefactorized one. On this small linear problem the U-Net is an accuracy and data-efficiency win, not a speed win; its cost doesn't grow with solver cost, which is where real 3-D nonlinear simulations come in.
 
 ![U-Net ensemble uncertainty and cost](figures/unet_ensemble.png)
+
+### Conformal prediction: a 90% guarantee on the gate
+
+The trust/solver gate makes one claim per query: "this plate's RMS error is at most *b*". **Split conformal prediction** makes that claim hold with a stated probability, whatever the model and whatever the shape of its errors:
+
+1. Pick a score: how wrong the ensemble was on a plate, in units of its own spread, $z_i = \mathrm{RMSE}_i / \bar\sigma_i$ ($\bar\sigma_i$ = the plate's RMS ensemble spread).
+2. Compute it on $n$ **calibration plates** the model never saw (not training, not early stopping, not testing).
+3. Take $\hat q$ = the $\lceil (n+1)(1-\alpha) \rceil$-th smallest score. For a new plate, the bound is $b = \hat q\,\bar\sigma$.
+
+If the new plate is **exchangeable** with the calibration plates (drawn the same way), its score is equally likely to land in any of the $n+1$ rank positions, so $P(\mathrm{RMSE} \le b) \ge 1-\alpha$, and no more than $1-\alpha+1/(n+1)$. With $\alpha = 0.1$ that is a 90% upper bound. Out of range, exchangeability with in-range calibration plates fails, and the method has to be built around that.
+
+**Four ways to calibrate, compared on fresh plates** (calibration: 200 in range + 300 from the widened box; evaluation: another 500 + 500; coverage as mean ± sd over 200 random half-refits):
+
+| U-Net ensemble | bound holds, in range | bound holds, OOD | pixel intervals, in / OOD | OOD sent to solver | **OOD wrongly trusted** | worst trusted error (OOD) |
+|---|---:|---:|---:|---:|---:|---:|
+| M1: one calibration factor (previous) | 99.4% | 77.4% | 92% / 74% | 8% | **9.6%** | 3.13 °C |
+| M2: conformal, calibrated in range only | 89.4 ± 3.8% | **46.2%** | 90% / 70% | 7% | 11.0% | 3.88 °C |
+| M3: conformal, query-like plates, one $\hat q$ | 100% | 84.4 ± 2.8% | 97% / 85% | 22% | 1.2% | 1.57 °C |
+| **M4: Mondrian conformal by OOD distance (shipped)** | **89.4 ± 3.8%** | **91.6 ± 1.9%** | **90% / 90%** | 35% | **0.2%** | **1.10 °C** |
+
+- **M2 shows the assumption breaking.** Calibrated in range, the guarantee holds in range (89.4%) and decays with distance: 69% → 47% → 38% across the OOD bins.
+- **M3 only promises an average.** One $\hat q$ (2.19) for everything is too wide in range (100%) and too narrow far out (79% beyond distance 0.2).
+- **M4 (Mondrian, i.e. group-conditional) holds in every group.** A separate $\hat q$ per distance bin (in box / 0–0.1 / 0.1–0.2 / > 0.2) grows with distance, 0.92 → 2.42 → 2.60 → 3.12, so the bounds widen exactly where the members' shared blind spots make the spread unreliable. Coverage per bin: 89 / 99 / 91 / 90%. (The 0–0.1 bin has only 37 calibration plates, hence the over-coverage.)
+- **Gate, U-Net + M4 vs. the POD + MLP model:** sends fewer out-of-range queries to the solver (35% vs. 57%), wrongly trusts fewer (0.2% vs. 0.8%), and its worst trusted error is lower (1.10 vs. 1.68 °C). In range it sends nothing to the solver and misses nothing.
+- **Not certified beyond the calibration data.** Queries farther out than the farthest calibration plate (distance 0.250) get no bound and always go to the solver. That is conservative: at 1.6× the maximum source amplitude the U-Net's actual error is 0.13 °C (its scale normalization handles that direction), but no calibration plate supports a guarantee there. To certify farther out, calibrate farther out.
+- **Why not weighted conformal?** It reweights calibration plates by the density ratio between queries and calibration data, which is undefined here: out-of-range queries have zero density under the in-range distribution.
+- **Measurement noise matters.** On the original 100-plate test sets, in-range coverage looked like 84–87%; on 500 fresh plates it was 88–89%. With 100 plates the binomial sd alone is ±3%, so coverage claims need hundreds of evaluation plates.
+- For the POD + MLP ensemble, whose single factor (2.00) was already conservative, conformal changes little (85–92% for every method).
+
+![Conformal calibration: coverage vs. OOD distance and the gate](figures/conformal.png)
 
 ## Limitations and next steps
 
 - **The physics is deliberately simple:** linear, steady, 2-D, uniform conductivity, on a fixed 64×64 grid. That keeps the ground truth exactly verifiable, and it's also why a well-optimized solver is already fast. The approach carries over, and the speed advantage grows, for nonlinear 3-D problems where no factorization can be reused.
 - **The surrogates are tied to one grid.** The U-Net takes geometry-like inputs, but still on a fixed 64×64 image. Real parts come as meshes of varying shape and resolution; mesh- and point-cloud models (graph neural networks) are the natural next step.
-- **The U-Net ensemble is overconfident out of distribution.** Identically built members share their extrapolation errors. Fixes to try: calibration that grows with OOD distance, conformal prediction on query-like data, or ensembles of different architectures.
-- **The uncertainty is epistemic only.** Ensemble spread captures what the model doesn't know, not noise in the data (there is none here). The errors are heavier-tailed than Gaussian, so one calibration factor over-covers at the 50% level and under-covers slightly at 99%; **conformal prediction** would give distribution-free intervals.
+- **The conformal guarantee is only as good as the calibration plates.** It holds for queries drawn like them (in box, or the widened box, per distance bin), not for an arbitrary future query distribution, and nothing beyond distance 0.25 is certified. The raw U-Net spread is still overconfident out of distribution; conformal corrects its scale per bin, not its ranking. Ensembles of different architectures could make the members' errors less correlated.
+- **The uncertainty is epistemic only.** Ensemble spread captures what the model doesn't know, not noise in the data (there is none here). The errors are heavier-tailed than Gaussian, so a Gaussian interval with one calibration factor over-covers at 50% and under-covers at 99%; the conformal bounds avoid that by using the empirical quantile.
 - **Active learning needs a query-aware score outside the training range.** Raw uncertainty picks extreme corner cases (experiment B); a score that measures expected error reduction over the expected queries, plus per-sample target normalization, is the next step.
-- **Possible upgrades:** conformal prediction for distribution-free, OOD-aware intervals; resize-then-convolve upsampling to remove the U-Net's checkerboard artifact; a physics-informed loss (PDE residual).
+- **Possible upgrades:** conditional conformal methods (bins learned from the data rather than fixed); resize-then-convolve upsampling to remove the U-Net's checkerboard artifact; a physics-informed loss (PDE residual).
 
 ## Reproduce everything
 
@@ -399,6 +460,8 @@ python scripts/train_unet.py --arms unet_noscale pod_mlp direct_mlp --seeds 0 1 
 python scripts/train_unet.py --plot
 python scripts/stress_tests.py --sweeps --datasize --plot
 python scripts/unet_ensemble.py
+python scripts/conformal_eval.py
+python scripts/export_unet.py
 ```
 
 | Script | What it does | Time on a laptop CPU |
@@ -416,8 +479,10 @@ python scripts/unet_ensemble.py
 | `train_unet.py` | U-Net (with/without scale norm) vs. MLP baselines; each run saved separately (`--arms`, `--seeds`; `--plot` aggregates) | ~55 min per U-Net on one thread |
 | `stress_tests.py` | single-parameter OOD sweeps (`--sweeps`, minutes) and data-efficiency retraining (`--datasize`) | ~2.5 h on 2 cores for `--datasize` |
 | `unet_ensemble.py` | 5-U-Net ensemble UQ vs. the shipped ensemble, plus timing | ~2 min |
+| `conformal_eval.py` | 4 calibration methods × 2 ensembles on fresh calibration and evaluation plates, coverage vs. OOD distance, gate counts | a few minutes |
+| `export_unet.py` | packages the 5 U-Nets and the Mondrian gate into `model_unet/` (checks $\hat q$ against `conformal_eval.py`) | seconds |
 
-Results land in `results/*.json` and `figures/`; data and trained runs (`data/`, `runs/`) are regenerated, not committed. The exported model in `model/` (about 6 MB) is committed so the Docker image builds without retraining. Every split, model and calibration factor is seeded and selected on the validation set only. On an Intel Mac, use Python 3.12 with `torch==2.2.2` and `numpy<2`.
+Results land in `results/*.json` and `figures/`; data and trained runs (`data/`, `runs/`) are regenerated, not committed. The exported models in `model/` (about 6 MB) and `model_unet/` (about 26 MB) are committed so the Docker image builds without retraining. Every split, model and calibration factor is seeded and selected on the validation set only. On an Intel Mac, use Python 3.12 with `torch==2.2.2` and `numpy<2`.
 
 ```
 src/thermal_surrogate/
@@ -430,9 +495,10 @@ src/thermal_surrogate/
   fields.py    plate parameters → input images (source/k, boundary lift, x, y), per-plate scale
   unet.py      U-Net, receptive field, field-to-field surrogate with hard constraints
   active.py    active learning: acquisition scores, selection rules, batch loop
+  conformal.py split / Mondrian conformal prediction, plate-level scores, calibration plates
   metrics.py   field error metrics shared by every model
   cli.py       the plate-surrogate command
-tests/         89 tests: physics invariants, numerics, ML, CLI, active learning, U-Net constraints
+tests/         104 tests: physics invariants, numerics, ML, CLI, active learning, U-Net constraints, conformal guarantee
 ```
 
 ## License

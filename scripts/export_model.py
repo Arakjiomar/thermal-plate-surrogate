@@ -30,7 +30,7 @@ for split in ("test", "ood"):
     deferred[split] = float((per_sample_spread(sigma) > TOL).mean())
 
 try:
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+    commit = subprocess.run(["git", "describe", "--always", "--dirty"], cwd=ROOT,
                             capture_output=True, text=True).stdout.strip() or "unknown"
 except OSError:
     commit = "unknown"
